@@ -59,6 +59,42 @@ export function resolveOllamaThink(model: string, modeRaw: unknown): OllamaThink
   }
 }
 
+/**
+ * Warms a model on a local Ollama server so the first chat message does not pay
+ * the model-load latency.
+ *
+ * Ollama loads a model into (V)RAM lazily on the first request and unloads it
+ * after an idle timeout. Posting `/api/generate` with only the model name (no
+ * prompt) triggers that load WITHOUT generating any tokens — Ollama answers with
+ * `done_reason: "load"`. We deliberately omit `keep_alive`, so the model still
+ * unloads on Ollama's default idle timer: warming is for first-message latency,
+ * not for pinning the model in memory forever.
+ *
+ * The native `/api/generate` endpoint lives at the server root regardless of the
+ * OpenAI-compatible `/v1/` path the chat client talks to, so it is derived from
+ * the configured base URL's origin.
+ *
+ * @param baseUrl - Configured OpenAI-compatible base URL, e.g. `http://localhost:11434/v1/`.
+ * @param model - Ollama model tag to load, e.g. `qwythos-nothink:latest`.
+ * @param signal - Forwarded to `fetch` so a cancelled preload aborts the request.
+ */
+export async function warmUpOllamaModel(baseUrl: string, model: string, signal?: AbortSignal): Promise<void> {
+  const origin = new URL(baseUrl).origin
+
+  const res = await fetch(`${origin}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, stream: false }),
+    signal,
+  })
+
+  if (!res.ok)
+    throw new Error(`Ollama warm-up for "${model}" failed: ${res.status} ${res.statusText}`)
+
+  // Drain the body so the connection is released; the payload is just the load ack.
+  await res.json().catch(() => undefined)
+}
+
 export const providerOllama = defineProvider<OllamaConfig>({
   id: 'ollama',
   order: 2,

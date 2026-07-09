@@ -1,0 +1,3 @@
+dist
+# Large WASM engine artifacts copied from node_modules by scripts/copy-engines.mjs.
+public/engines

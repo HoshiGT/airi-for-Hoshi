@@ -2,7 +2,7 @@ import type { ChatHistoryItem } from '../../../types/chat'
 
 import { describe, expect, it } from 'vitest'
 
-import { getChatHistoryItemKey } from './utils'
+import { formatChatTimestamp, getChatHistoryItemKey } from './utils'
 
 describe('getChatHistoryItemKey', () => {
   it('prefers stable message ids when available', () => {
@@ -36,5 +36,36 @@ describe('getChatHistoryItemKey', () => {
 
     expect(getChatHistoryItemKey(userMessage, 0)).toBe('user:0')
     expect(getChatHistoryItemKey(assistantMessage, 1)).toBe('assistant:1')
+  })
+})
+
+describe('formatChatTimestamp', () => {
+  const labels = { yesterday: '昨天' }
+  // Fixed "now": 2026-07-06 15:00 local time.
+  const now = new Date(2026, 6, 6, 15, 0, 0).getTime()
+
+  it('shows bare HH:MM for the same day', () => {
+    const ts = new Date(2026, 6, 6, 9, 5, 0).getTime()
+    expect(formatChatTimestamp(ts, labels, now)).toBe('09:05')
+  })
+
+  it('marks the previous calendar day as yesterday, even across a short gap', () => {
+    // 23:59 yesterday vs 15:00 today is < 24h apart but a different calendar day.
+    const ts = new Date(2026, 6, 5, 23, 59, 0).getTime()
+    expect(formatChatTimestamp(ts, labels, now)).toBe('昨天 23:59')
+  })
+
+  it('shows MM-DD HH:MM within the same year', () => {
+    const ts = new Date(2026, 3, 25, 18, 47, 0).getTime()
+    expect(formatChatTimestamp(ts, labels, now)).toBe('04-25 18:47')
+  })
+
+  it('shows the full date for earlier years', () => {
+    const ts = new Date(2025, 11, 31, 8, 30, 0).getTime()
+    expect(formatChatTimestamp(ts, labels, now)).toBe('2025-12-31 08:30')
+  })
+
+  it('returns empty for messages without a recorded timestamp', () => {
+    expect(formatChatTimestamp(undefined, labels, now)).toBe('')
   })
 })

@@ -37,7 +37,6 @@ import {
   createTranscriptionProvider,
   merge,
 } from '@xsai-ext/providers/utils'
-import { listModels } from '@xsai/model'
 import { uniqBy } from 'es-toolkit'
 import { defineStore } from 'pinia'
 import {
@@ -60,6 +59,7 @@ import { createAliyunNLSProvider as createAliyunNlsStreamProvider } from './prov
 import { convertProviderDefinitionsToMetadata } from './providers/converters'
 import { models as elevenLabsModels } from './providers/elevenlabs/list-models'
 import { buildGoogleGeminiSpeechProvider } from './providers/google-gemini-speech'
+import { listAudioModels } from './providers/openai-compatible-audio-models'
 import { buildOpenAICompatibleProvider } from './providers/openai-compatible-builder'
 import { buildOpenRouterAudioSpeechProvider } from './providers/openrouter/audio-speech'
 import { createWebSpeechAPIProvider } from './providers/web-speech-api'
@@ -619,46 +619,7 @@ export const useProvidersStore = defineStore('providers', () => {
         listVoices: async () => {
           return []
         },
-        listModels: async (config: Record<string, unknown>) => {
-          // Filter models to only include TTS models
-          const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : ''
-          let baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
-
-          if (!baseUrl.endsWith('/'))
-            baseUrl += '/'
-
-          if (!apiKey || !baseUrl) {
-            return []
-          }
-
-          const provider = await createOpenAI(apiKey, baseUrl)
-          if (!provider || typeof provider.model !== 'function') {
-            return []
-          }
-
-          const models = await listModels({
-            apiKey,
-            baseURL: baseUrl,
-          })
-
-          // Filter for TTS models - look for models with "tts" in the ID
-          return models
-            .filter((model: any) => {
-              const modelId = model.id.toLowerCase()
-              // Include models that contain "tts" in their ID
-              return modelId.includes('tts')
-            })
-            .map((model: any) => {
-              return {
-                id: model.id,
-                name: model.name || model.display_name || model.id,
-                provider: 'openai-compatible-audio-speech',
-                description: model.description || '',
-                contextLength: model.context_length || 0,
-                deprecated: false,
-              } satisfies ModelInfo
-            })
-        },
+        listModels: config => listAudioModels(config, 'speech', 'openai-compatible-audio-speech'),
       },
       creator: createOpenAI,
     }),
@@ -753,12 +714,12 @@ export const useProvidersStore = defineStore('providers', () => {
       tasks: ['speech-to-text', 'automatic-speech-recognition', 'asr', 'stt'],
       creator: createOpenAI,
       capabilities: {
-        // Override listModels to return empty array - transcription models cannot be fetched from /v1/models
-        // Users must manually enter transcription model names (e.g., whisper-1, gpt-4o-transcribe)
-        // The /v1/models endpoint only returns chat models, not transcription models
-        listModels: async () => {
-          return []
-        },
+        // Official OpenAI hides transcription models from /v1/models, but local
+        // ASR servers (whisper.cpp server, speaches, faster-whisper-server, ...)
+        // do list them there. Discovery is best-effort: it filters for ASR-looking
+        // ids and returns [] on failure, which keeps the manual model input as the
+        // fallback path in both the provider page and the hearing module page.
+        listModels: config => listAudioModels(config, 'transcription', 'openai-compatible-audio-transcription'),
       },
     }),
     'aliyun-nls-transcription': {

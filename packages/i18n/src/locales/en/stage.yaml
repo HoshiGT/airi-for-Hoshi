@@ -2,6 +2,7 @@ chat:
   actions:
     retry: Retry
   message:
+    yesterday: Yesterday
     character-name:
       airi: AIRI
       core-system: Core System

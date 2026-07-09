@@ -1,0 +1,30 @@
+{
+  "name": "@proj-airi/qq-bot",
+  "type": "module",
+  "private": true,
+  "description": "QQ bot for AIRI via OneBot (NapCat)",
+  "author": {
+    "name": "Moeru AI Project AIRI Team",
+    "email": "airi@moeru.ai",
+    "url": "https://github.com/moeru-ai"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "tsx --env-file=.env --env-file-if-exists=.env.local src/index.ts",
+    "dev": "tsx --env-file=.env --env-file-if-exists=.env.local --watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@guiiai/logg": "catalog:",
+    "@proj-airi/plugin-protocol": "workspace:^",
+    "@proj-airi/server-sdk": "workspace:^",
+    "@proj-airi/server-shared": "workspace:^",
+    "tsx": "catalog:",
+    "ws": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "typescript": "catalog:"
+  }
+}

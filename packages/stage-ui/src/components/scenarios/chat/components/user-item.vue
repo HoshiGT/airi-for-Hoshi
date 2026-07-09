@@ -6,13 +6,15 @@ import { computed } from 'vue'
 
 import { MarkdownRenderer } from '../../../markdown'
 import { ChatActionMenu } from '../components/action-menu'
-import { getChatHistoryItemCopyText } from '../utils'
+import { formatChatTimestamp, getChatHistoryItemCopyText } from '../utils'
 
 const props = withDefaults(defineProps<{
-  message: Extract<ChatMessage, { role: 'user' }>
+  message: Extract<ChatMessage, { role: 'user' }> & { createdAt?: number }
   label: string
+  yesterdayLabel?: string
   variant?: 'desktop' | 'mobile'
 }>(), {
+  yesterdayLabel: 'Yesterday',
   variant: 'desktop',
 })
 
@@ -46,6 +48,7 @@ const boxClasses = computed(() => [
   props.variant === 'mobile' ? 'px-2 py-2 text-sm bg-neutral-100/90 dark:bg-neutral-800/90' : 'px-3 py-3 bg-neutral-100/80 dark:bg-neutral-800/80',
 ])
 const copyText = computed(() => getChatHistoryItemCopyText(props.message as ChatHistoryItem))
+const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { yesterday: props.yesterdayLabel }))
 </script>
 
 <template>
@@ -66,8 +69,9 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
             (isStageWeb() || isStageCapacitor()) && props.variant === 'mobile' ? 'select-none sm:select-auto' : '',
           ]"
         >
-          <div>
-            <span text-sm text="black/60 dark:white/65" font-normal class="inline <sm:hidden">{{ label }}</span>
+          <div class="<sm:hidden" :class="['flex items-baseline gap-1.5']">
+            <span text-sm text="black/60 dark:white/65" font-normal>{{ label }}</span>
+            <span v-if="timeText" text-xs text="black/35 dark:white/40" font-normal>{{ timeText }}</span>
           </div>
           <MarkdownRenderer
             :content="content as string"

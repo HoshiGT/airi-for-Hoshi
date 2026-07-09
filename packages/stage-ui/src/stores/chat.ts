@@ -4,6 +4,7 @@ import type { Message } from '@xsai/shared-chat'
 
 import type { ChatHistoryItem } from '../types/chat'
 
+import { errorMessageFrom } from '@moeru/std'
 import { createChatOrchestratorRuntime } from '@proj-airi/core-agent'
 import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
 import { nanoid } from 'nanoid'
@@ -15,6 +16,8 @@ import { activeTurnSpan, startSpan } from '../composables/use-io-tracer'
 import { extractMessageText, isCloudSyncableMessage } from '../libs/chat-sync'
 import { createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
+import { useMemoryService } from './chat/memory'
+import { planConsolidation } from './chat/memory/trim'
 import { useChatSessionStore } from './chat/session-store'
 import { useChatStreamStore } from './chat/stream-store'
 import { useContextObservabilityStore } from './devtools/context-observability'
@@ -23,6 +26,7 @@ import { useLlmToolsetPromptsStore } from './llm-toolset-prompts'
 import { useAiriCardStore } from './modules/airi-card'
 import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
+import { useMemoryStore } from './modules/memory'
 
 interface ForkOptions {
   fromSessionId?: string
@@ -33,7 +37,11 @@ interface ForkOptions {
 
 type ProviderHistoryMessage = Exclude<ChatHistoryItem, { role: 'error' }>
 
-function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
+/**
+ * Strips UI-only `error` entries so the history is valid provider input.
+ * Shared with the manual memory-consolidation flow in the maintenance store.
+ */
+export function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
   return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
 }
 
@@ -63,6 +71,8 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const chatContext = useChatContextStore()
   const cardStore = useAiriCardStore()
   const contextObservability = useContextObservabilityStore()
+  const memoryStore = useMemoryStore()
+  const memoryService = useMemoryService()
   const { activeSessionId } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
 
@@ -130,6 +140,63 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     if (activeTurnSpan.value === ownedActiveTurnSpan)
       activeTurnSpan.value = undefined
     ownedActiveTurnSpan = undefined
+  }
+
+  // Sessions with an in-flight consolidation pass. Guards a second pass from
+  // starting for the same session while the async model call + trim runs.
+  // Keyed by sessionId so the UI session and each QQ DM (`qq-private-*`) each
+  // consolidate independently — they share the orchestrator but not their
+  // round cadence.
+  const consolidatingSessions = new Set<string>()
+
+  /**
+   * After a completed turn, summarize+archive the oldest rounds of `sessionId`
+   * and trim them from the live context once the round count crosses the
+   * configured high-water mark.
+   *
+   * Fire-and-forget from the turn hook: it must never block the reply, and a
+   * failed summary must never lose live history — trimming happens only after
+   * `consolidate` resolves, and only the archived ids are removed.
+   */
+  async function maybeConsolidateSession(sessionId: string) {
+    if (!memoryStore.configured)
+      return
+    if (consolidatingSessions.has(sessionId))
+      return
+
+    // Detach from the reactive proxy: the archived messages are persisted into
+    // the memory DB and handed to the model, so they must be plain snapshots.
+    const snapshot = chatSession.getSessionMessages(sessionId).map(message => toRaw(message))
+    const plan = planConsolidation(snapshot, {
+      triggerRounds: memoryStore.triggerRounds,
+      retainRounds: memoryStore.retainRounds,
+    })
+    if (!plan)
+      return
+
+    consolidatingSessions.add(sessionId)
+    try {
+      await memoryService.consolidate(sessionId, toProviderHistory(plan.archived), {
+        roundFrom: plan.roundFrom,
+        roundTo: plan.roundTo,
+        // Undo backup: the raw session items (ids included) about to be trimmed.
+        archivedSessionMessages: plan.archived,
+      })
+
+      // Trim by id against the *current* list, not the snapshot: messages that
+      // arrived while the model call ran keep their place; only the archived
+      // rounds are removed.
+      const current = chatSession.getSessionMessages(sessionId)
+      const trimmed = current.filter(message => !message.id || !plan.archivedIds.has(message.id))
+      chatSession.setSessionMessages(sessionId, trimmed)
+    }
+    catch (err) {
+      // Leave live history intact on failure; the next completed turn retries.
+      console.warn('[chat] memory consolidation failed for', sessionId, errorMessageFrom(err))
+    }
+    finally {
+      consolidatingSessions.delete(sessionId)
+    }
   }
 
   const runtime = createChatOrchestratorRuntime({
@@ -206,6 +273,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
           content: extractMessageText(message),
         })
       }
+      // Per-session memory consolidation (UI session + each QQ DM). Uses the
+      // hook's sessionId, never activeSessionId, so QQ turns consolidate their
+      // own session even when the UI is focused elsewhere.
+      void maybeConsolidateSession(sessionId)
     },
     onUserTurnReady: ({ messageText, sessionMessages }) => {
       const autonomousTarget = cardStore.activeCard?.extensions?.airi?.modules?.artistry?.autonomousTarget || 'user'

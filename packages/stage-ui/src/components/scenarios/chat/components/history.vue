@@ -44,6 +44,7 @@ const labels = computed(() => ({
   user: props.userLabel ?? t('stage.chat.message.character-name.you'),
   error: props.errorLabel ?? t('stage.chat.message.character-name.core-system'),
   retry: props.retryLabel ?? t('stage.chat.actions.retry'),
+  yesterday: t('stage.chat.message.yesterday'),
 }))
 
 const streaming = computed<ChatAssistantMessage & { context?: ContextMessage } & { createdAt?: number }>(() => props.streamingMessage ?? { role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
@@ -126,6 +127,7 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
           v-else-if="message.role === 'assistant'"
           :message="message"
           :label="labels.assistant"
+          :yesterday-label="labels.yesterday"
           :show-placeholder="shouldShowPlaceholder(message) && showStreamingPlaceholder"
           :variant="variant"
           :tool-call-renderers="toolCallRenderers"
@@ -136,6 +138,7 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
           v-else-if="message.role === 'user'"
           :message="message"
           :label="labels.user"
+          :yesterday-label="labels.yesterday"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"

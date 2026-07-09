@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 480" width="432" height="480">
+  <defs>
+    <g id="mark-mid"><path fill="none" d="M 12,5 h -7 v 7 M -12,5 h 7 v 7 M 12,-5 h -7 v -7 M -12,-5 h 7 v -7"/></g>
+    <g id="mark-edge"><path fill="none" d="M 12,5 h -7 v 7 M 12,-5 h -7 v -7"/></g>
+    <g id="marks-top" stroke="#777">
+<use href="#mark-mid" fill="none" transform="translate(72,120) scale(1,1) rotate(0)"/><use href="#mark-mid" fill="none" transform="translate(120,168) scale(1,1) rotate(0)"/><use href="#mark-mid" fill="none" transform="translate(216,168) scale(1,1) rotate(0)"/><use href="#mark-mid" fill="none" transform="translate(312,168) scale(1,1) rotate(0)"/><use href="#mark-mid" fill="none" transform="translate(360,120) scale(1,1) rotate(0)"/><use href="#mark-edge" fill="none" transform="translate(24,168) scale(1,1) rotate(0)"/><use href="#mark-edge" fill="none" transform="translate(408,168) scale(1,1) rotate(180)"/>
+    </g>
+  </defs>
+  <g stroke="#777" stroke-width="2" stroke-linejoin="round">
+    <path d="M 0,0 h 432 v 480 h -432 z" stroke="none" fill="#f9d98d"/>
+    <path d="M 18,18 h 396 v 444 h -396 z" stroke-width="4" fill="none"/>
+    <path d="M 24,24 h 384 v 432 h -384 v -432 M 24,72 h 384 M 24,120 h 384 M 24,168 h 384 M 24,216 h 384 M 24,264 h 384 M 24,312 h 384 M 24,360 h 384 M 24,408 h 384  M 72,24 v 192 M 72,264 v 192 M 120,24 v 192 M 120,264 v 192 M 168,24 v 192 M 168,264 v 192 M 216,24 v 192 M 216,264 v 192 M 264,24 v 192 M 264,264 v 192 M 312,24 v 192 M 312,264 v 192 M 360,24 v 192 M 360,264 v 192  M 168,24 l 96,96 M 264,24 l -96,96 M 168,456 l 96,-96 M 264,456 l -96,-96" fill="none"/>
+    <use href="#marks-top"/>
+    <use href="#marks-top" transform="rotate(180 216,240)"/>
+    <g fill="#777" stroke="none" font-family="'KaiTi','STKaiti','Kaiti SC','Noto Serif CJK SC',serif" font-size="30" letter-spacing="6"><text x="120" y="240" text-anchor="middle" dominant-baseline="central">楚河</text><text x="312" y="240" text-anchor="middle" dominant-baseline="central">漢界</text></g>
+  </g>
+</svg>

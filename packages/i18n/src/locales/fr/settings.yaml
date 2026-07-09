@@ -658,12 +658,6 @@ pages:
               Remarque : Si votre fournisseur ne prend pas en charge les réponses verbose_json, ce paramètre n'aura aucun effet.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
-    memory-long-term:
-      description: Paramètres et gestion de la mémoire à long terme
-      title: Mémoire à long terme
-    memory-short-term:
-      description: Paramètres et gestion de la mémoire à court terme
-      title: Mémoire à court terme
     messaging-discord:
       description: Chat et chat vocal via Discord
       title: Discord

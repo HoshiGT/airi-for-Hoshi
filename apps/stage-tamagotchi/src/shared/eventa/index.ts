@@ -304,6 +304,98 @@ export const electronWindowSetAlwaysOnTop = defineInvokeEventa<void, boolean>('e
 export const electronAppOpenUserDataFolder = defineInvokeEventa<{ path: string }>('eventa:invoke:electron:app:open-user-data-folder')
 export const electronAppQuit = defineInvokeEventa<void>('eventa:invoke:electron:app:quit')
 
+// Bridges the stage's fade-on-hover preference (renderer-owned, persisted in
+// localStorage) to the main process so the tray menu can mirror and toggle it.
+// The tray toggle is the guaranteed escape hatch: while fade-on-hover has the
+// stage window in click-through, the window itself may not be clickable.
+export const electronStageFadeOnHoverChanged = defineEventa<{ enabled: boolean }>('eventa:event:electron:stage:fade-on-hover-changed')
+export const electronStageSetFadeOnHover = defineEventa<{ enabled: boolean }>('eventa:event:electron:stage:set-fade-on-hover')
+
+// Desktop control: a Neuro-style capability letting the character look at the
+// real desktop (one-shot screenshot for the vision model) and drive the mouse
+// and keyboard. Screenshots come from Electron's `desktopCapturer`; input is
+// synthesized by an OS backend (currently `xdotool` on Linux/X11). The renderer
+// owns the enable/permission gate — these handlers just execute what they are
+// asked, so callers must respect the desktop-control module flags.
+
+/**
+ * Reports whether desktop control can run on this host.
+ *
+ * `screenshot` reflects whether `desktopCapturer` can produce a frame (always
+ * available inside Electron). `input` reflects whether an OS input backend was
+ * discovered on PATH; when `false`, `reason` explains why (missing binary or
+ * unsupported platform) so the settings UI can guide installation.
+ */
+export interface DesktopControlAvailability {
+  screenshot: boolean
+  input: boolean
+  /** Input synthesis backend that was resolved, or `none` when unavailable. */
+  backend: 'xdotool' | 'none'
+  platform: NodeJS.Platform
+  /** Human-readable explanation shown in settings when `input` is false. */
+  reason?: string
+}
+
+/**
+ * One captured desktop frame plus the geometry needed to translate the model's
+ * in-image click coordinates back to absolute screen pixels for input synthesis.
+ */
+export interface DesktopScreenshot {
+  /** JPEG data URL of the captured display, downscaled to the requested box. */
+  dataUrl: string
+  /** Width of the returned image in pixels (the model's coordinate space). */
+  width: number
+  /** Height of the returned image in pixels (the model's coordinate space). */
+  height: number
+  /**
+   * Captured display's bounds in absolute device pixels (the input backend's
+   * coordinate space on X11). Used to map image coordinates onto the screen.
+   */
+  displayBounds: { x: number, y: number, width: number, height: number }
+  /** Electron display id the frame came from. */
+  displayId: string
+  capturedAt: number
+}
+
+export interface DesktopScreenshotRequest {
+  /** @default 1280 */
+  maxWidth?: number
+  /** @default 800 */
+  maxHeight?: number
+}
+
+export type DesktopMouseButton = 'left' | 'right' | 'middle'
+
+/**
+ * A single pointer action expressed in absolute device pixels. The renderer maps
+ * the model's in-image coordinates to screen pixels before dispatching, so the
+ * main handler can hand `x`/`y` straight to the input backend.
+ */
+export interface DesktopMouseAction {
+  action: 'move' | 'click' | 'double_click' | 'scroll'
+  x?: number
+  y?: number
+  /** @default 'left' */
+  button?: DesktopMouseButton
+  /** Wheel steps for `scroll`; positive scrolls down, negative scrolls up. */
+  scrollAmount?: number
+}
+
+/**
+ * A single keyboard action. `type` sends literal text; `key` presses a chord
+ * such as `ctrl+c`, `Return`, or `alt+Tab` (X keysym syntax for the backend).
+ */
+export interface DesktopKeyboardAction {
+  action: 'type' | 'key'
+  text?: string
+  keys?: string
+}
+
+export const desktopControlGetAvailability = defineInvokeEventa<DesktopControlAvailability>('eventa:invoke:electron:desktop-control:get-availability')
+export const desktopControlScreenshot = defineInvokeEventa<DesktopScreenshot, DesktopScreenshotRequest>('eventa:invoke:electron:desktop-control:screenshot')
+export const desktopControlMouse = defineInvokeEventa<void, DesktopMouseAction>('eventa:invoke:electron:desktop-control:mouse')
+export const desktopControlKeyboard = defineInvokeEventa<void, DesktopKeyboardAction>('eventa:invoke:electron:desktop-control:keyboard')
+
 export type ElectronGodotStageState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 /**

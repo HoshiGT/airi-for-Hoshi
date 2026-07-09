@@ -18,6 +18,11 @@ export default defineConfig(({ mode }) => {
       projects: [
         {
           extends: true,
+          // Vue() lets jsdom-environment tests mount SFCs (e.g. Board.test.ts);
+          // the node project otherwise can't transform .vue files.
+          plugins: [
+            Vue(),
+          ],
           test: {
             name: 'node',
             include: ['src/**/*.test.ts'],

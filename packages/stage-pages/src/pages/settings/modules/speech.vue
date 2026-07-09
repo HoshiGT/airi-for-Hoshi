@@ -166,6 +166,26 @@ watch([activeSpeechProvider, activeSpeechModel, activeSpeechVoiceId], ([provider
   airiCardStore.updateActiveCardSpeech({ provider, model, voice_id: voiceId })
 })
 
+// Chat playback resolves OpenAI-compatible model/voice from the provider config
+// (see the speech pipeline in Stage.vue), and syncOpenAICompatibleSettings()
+// re-seeds this page from that config on every visit. Persist non-empty picks
+// back so a model or voice chosen here actually sticks and reaches chat
+// playback. Empty values are skipped: the provider-switch watcher clears both
+// refs transiently, and writing that through would wipe the saved selection.
+watch([activeSpeechModel, activeSpeechVoiceId], ([model, voiceId]) => {
+  if (activeSpeechProvider.value !== 'openai-compatible-audio-speech')
+    return
+
+  const providerConfig = providersStore.getProviderConfig(activeSpeechProvider.value)
+  if (!providerConfig)
+    return
+
+  if (model)
+    providerConfig.model = model
+  if (voiceId)
+    providerConfig.voice = voiceId
+})
+
 // Function to generate speech
 async function generateTestSpeech() {
   if (!testText.value.trim() && !useSSML.value)
@@ -295,6 +315,11 @@ onUnmounted(() => {
 })
 
 function updateCustomVoiceName(value: string | undefined) {
+  // Keep the id ref in sync: the manual voice input renders from
+  // activeSpeechVoiceId, and persistence (airi card + provider config
+  // write-back) watches it rather than the VoiceInfo object.
+  activeSpeechVoiceId.value = value || ''
+
   if (!value) {
     activeSpeechVoice.value = undefined
     return
@@ -467,19 +492,7 @@ function handleDeleteProvider(providerId: string) {
             </div>
           </div>
 
-          <!-- Manual input for OpenAI Compatible -->
-          <div v-if="activeSpeechProvider === 'openai-compatible-audio-speech'">
-            <FieldInput
-              :model-value="activeSpeechModel || ''"
-              label="Model"
-              description="Enter the TTS model to use for speech generation"
-              placeholder="tts-1"
-              @update:model-value="updateCustomModelName"
-            />
-          </div>
-
-          <!-- Model listing for other providers -->
-          <div v-else-if="supportsModelListing" class="flex flex-col gap-4">
+          <div v-if="supportsModelListing" class="flex flex-col gap-4">
             <!-- Loading state -->
             <div v-if="isLoadingActiveProviderModels" class="flex items-center justify-center py-4">
               <div class="mr-2 animate-spin">

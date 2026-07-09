@@ -45,6 +45,9 @@ export default defineConfig({
       '@proj-airi/drizzle-duckdb-wasm',
       '@proj-airi/drizzle-duckdb-wasm/*',
 
+      // PGlite ships its own wasm + worker; pre-bundling breaks those asset URLs.
+      '@electric-sql/pglite',
+
       // Static Assets: Models, Images, etc.
       'public/assets/*',
 

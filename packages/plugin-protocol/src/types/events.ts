@@ -16,6 +16,19 @@ export interface Discord {
   channelId?: string
 }
 
+export interface OneBotSender {
+  userId: number
+  nickname: string
+}
+
+export interface OneBot {
+  userId: number
+  groupId?: number
+  messageId: number
+  selfId: number
+  sender?: OneBotSender
+}
+
 export interface PluginIdentity {
   /**
    * Stable plugin identifier (shared across instances).
@@ -531,6 +544,7 @@ interface InputSource {
   'stage-web': boolean
   'stage-tamagotchi': boolean
   'discord': Discord
+  'onebot': OneBot
 }
 
 interface OutputSource {
@@ -597,7 +611,7 @@ export interface WebSocketEventInputTextBase {
   contextUpdates?: InputContextUpdate[]
 }
 
-export type WebSocketEventInputText = WebSocketEventInputTextBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>>
+export type WebSocketEventInputText = WebSocketEventInputTextBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>>
 
 export interface WebSocketEventInputTextVoiceBase {
   transcription: string
@@ -606,7 +620,7 @@ export interface WebSocketEventInputTextVoiceBase {
   contextUpdates?: InputContextUpdate[]
 }
 
-export type WebSocketEventInputTextVoice = WebSocketEventInputTextVoiceBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>>
+export type WebSocketEventInputTextVoice = WebSocketEventInputTextVoiceBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>>
 
 export interface WebSocketEventInputVoiceBase {
   audio: ArrayBuffer
@@ -614,7 +628,7 @@ export interface WebSocketEventInputVoiceBase {
   contextUpdates?: InputContextUpdate[]
 }
 
-export type WebSocketEventInputVoice = WebSocketEventInputVoiceBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>>
+export type WebSocketEventInputVoice = WebSocketEventInputVoiceBase & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>>
 
 export type InputEventData = WebSocketEventInputText | WebSocketEventInputTextVoice | WebSocketEventInputVoice
 
@@ -1065,11 +1079,11 @@ interface UiConfigureEvent<C = undefined> {
 
 type OutputGenAiChatToolCallEvent = {
   toolCalls: ToolMessage[]
-} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>> & Partial<WithOutputSource<'gen-ai:chat'>>
+} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>> & Partial<WithOutputSource<'gen-ai:chat'>>
 
 type OutputGenAiChatMessageEvent = {
   message: AssistantMessage
-} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>> & Partial<WithOutputSource<'gen-ai:chat'>>
+} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>> & Partial<WithOutputSource<'gen-ai:chat'>>
 
 interface OutputGenAiChatUsage {
   promptTokens: number
@@ -1082,7 +1096,7 @@ type OutputGenAiChatCompleteEvent = {
   message: AssistantMessage
   toolCalls: ToolMessage[]
   usage: OutputGenAiChatUsage
-} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord'>> & Partial<WithOutputSource<'gen-ai:chat'>>
+} & Partial<WithInputSource<'stage-web' | 'stage-tamagotchi' | 'discord' | 'onebot'>> & Partial<WithOutputSource<'gen-ai:chat'>>
 
 interface SparkNotifyEvent {
   id: string
@@ -1157,6 +1171,49 @@ interface TransportConnectionHeartbeatEvent {
 }
 
 type ContextUpdateEvent = ContextUpdate
+
+/** Board-game variants the UCI engine service can analyze. */
+export type GameEngineVariant = 'chess' | 'xiangqi'
+
+/** One ranked candidate move from a MultiPV engine search. */
+export interface GameEngineCandidate {
+  /** Move in UCI notation (e.g. `e2e4`, `h2e2`). */
+  uci: string
+  /** 1-based MultiPV rank; rank 1 is the engine's preferred move. */
+  rank: number
+  /** Score in centipawns from the side to move; absent for forced mates. */
+  scoreCp?: number
+  /** Moves until mate (negative = side to move gets mated); absent otherwise. */
+  mate?: number
+}
+
+/**
+ * Position analysis request (board → engine service). Routed to one registered
+ * engine-service consumer; the reply comes back as a broadcast
+ * `game:engine:analyze:result` correlated by `requestId`.
+ */
+export interface GameEngineAnalyzeEvent {
+  /** Correlation key echoed back on the result event. */
+  requestId: string
+  variant: GameEngineVariant
+  fen: string
+  /** Number of principal variations (candidate moves) wanted. */
+  multiPv: number
+  /** Search budget in milliseconds. */
+  movetimeMs?: number
+}
+
+/** Analysis reply (engine service → requester, broadcast). */
+export interface GameEngineAnalyzeResultEvent {
+  /** Matches the originating request's `requestId`. */
+  requestId: string
+  variant: GameEngineVariant
+  /** Best move in UCI notation; empty when analysis failed. */
+  best: string
+  candidates: GameEngineCandidate[]
+  /** Present when the engine could not analyze (e.g. binary not configured). */
+  error?: string
+}
 
 export const peerAuthenticate = defineEventa<PeerAuthenticateEvent>('peer:authenticate')
 export const peerAuthenticated = defineEventa<PeerAuthenticatedEvent>('peer:authenticated')
@@ -1275,6 +1332,19 @@ export const sparkNotify = defineProtocolEventa<SparkNotifyEvent>('spark:notify'
 export const sparkEmit = defineProtocolEventa<SparkEmitEvent>('spark:emit')
 export const sparkCommand = defineProtocolEventa<SparkCommandEvent>('spark:command')
 
+// Requests route to exactly one engine service; results broadcast back and the
+// requester correlates them by requestId.
+export const gameEngineAnalyze = defineProtocolEventa<GameEngineAnalyzeEvent>('game:engine:analyze', {
+  metadata: {
+    delivery: {
+      mode: 'consumer-group',
+      group: 'game-engine',
+      selection: 'first',
+    },
+  },
+})
+export const gameEngineAnalyzeResult = defineProtocolEventa<GameEngineAnalyzeResultEvent>('game:engine:analyze:result')
+
 export const transportConnectionHeartbeat = defineProtocolEventa<TransportConnectionHeartbeatEvent>('transport:connection:heartbeat')
 export const contextUpdate = defineProtocolEventa<ContextUpdateEvent>('context:update')
 
@@ -1282,6 +1352,7 @@ export const protocolEventMetadataByType = {
   [inputText.id]: inputText.metadata,
   [inputTextVoice.id]: inputTextVoice.metadata,
   [inputVoice.id]: inputVoice.metadata,
+  [gameEngineAnalyze.id]: gameEngineAnalyze.metadata,
 } satisfies Partial<Record<keyof ProtocolEvents, ProtocolEventaMetadata | undefined>>
 
 export function getProtocolEventMetadata(eventType: keyof ProtocolEvents | string) {
@@ -1505,6 +1576,16 @@ export interface ProtocolEvents<C = undefined> {
    * - Contextual hints: intent=context with contextPatch ideas/hints.
    */
   'spark:command': SparkCommandEvent
+
+  /**
+   * Position analysis request for the UCI engine service (consumer-group
+   * `game-engine`); replied to with `game:engine:analyze:result`.
+   */
+  'game:engine:analyze': GameEngineAnalyzeEvent
+  /**
+   * Broadcast analysis reply; requesters correlate by `requestId`.
+   */
+  'game:engine:analyze:result': GameEngineAnalyzeResultEvent
 
   'transport:connection:heartbeat': TransportConnectionHeartbeatEvent
 

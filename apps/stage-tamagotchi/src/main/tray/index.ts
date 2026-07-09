@@ -11,15 +11,17 @@ import type { WidgetsWindowManager } from '../windows/widgets'
 import { env } from 'node:process'
 
 import { is } from '@electron-toolkit/utils'
+import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { isRendererUnavailable } from '@proj-airi/electron-vueuse/main'
 import { effect } from 'alien-signals'
-import { app, Menu, nativeImage, screen, Tray } from 'electron'
+import { app, ipcMain, Menu, nativeImage, screen, Tray } from 'electron'
 import { debounce, once } from 'es-toolkit'
 import { isMacOS } from 'std-env'
 
 import icon from '../../../resources/icon.png?asset'
 import macOSTrayIcon from '../../../resources/tray-icon-macos.png?asset'
 
+import { electronStageFadeOnHoverChanged, electronStageSetFadeOnHover } from '../../shared/eventa'
 import { onAppBeforeQuit } from '../libs/bootkit/lifecycle'
 import { setupInlayWindow } from '../windows/inlay'
 import { toggleWindowShow } from '../windows/shared/window'
@@ -104,6 +106,13 @@ export function setupTray(params: {
     const appTray = new Tray(trayImage)
     onAppBeforeQuit(() => appTray.destroy())
 
+    // Mirror of the stage renderer's fade-on-hover preference (owner:
+    // controls-island store, persisted in renderer localStorage). The tray
+    // checkbox is the guaranteed escape hatch: while fade-on-hover has the
+    // stage window in click-through, the window itself may not be clickable.
+    const { context: stageContext } = createContext(ipcMain, params.mainWindow)
+    let stageFadeOnHoverEnabled = false
+
     const rebuildContextMenu = debounce((): void => {
       if (isRendererUnavailable(params.mainWindow)) {
         return
@@ -119,6 +128,16 @@ export function setupTray(params: {
 
       const contextMenu = Menu.buildFromTemplate([
         { label: params.i18n.t('tamagotchi.electron.tray.menu.labels.label.show'), click: () => toggleWindowShow(params.mainWindow) },
+        {
+          type: 'checkbox',
+          label: params.i18n.t('tamagotchi.stage.controls-island.fade-on-hover.enable'),
+          checked: stageFadeOnHoverEnabled,
+          click: (menuItem) => {
+            if (isRendererUnavailable(params.mainWindow))
+              return
+            stageContext.emit(electronStageSetFadeOnHover, { enabled: Boolean(menuItem.checked) })
+          },
+        },
         { type: 'separator' },
         {
           label: params.i18n.t('tamagotchi.electron.tray.menu.labels.label.adjust_sizes'),
@@ -220,6 +239,15 @@ export function setupTray(params: {
 
       appTray.setContextMenu(contextMenu)
     }, 50)
+
+    stageContext.on(electronStageFadeOnHoverChanged, (event) => {
+      const enabled = !!event?.body?.enabled
+      if (enabled === stageFadeOnHoverEnabled)
+        return
+
+      stageFadeOnHoverEnabled = enabled
+      rebuildContextMenu()
+    })
 
     params.mainWindow.on('resize', rebuildContextMenu)
     params.mainWindow.on('move', rebuildContextMenu)

@@ -41,6 +41,7 @@ import { modelSettingsRuntimeSnapshotChannelName } from '../../shared/model-sett
 import { useChatSyncStore } from '../stores/chat-sync'
 import { useControlsIslandStore } from '../stores/controls-island'
 import { useStageWindowLifecycleStore } from '../stores/stage-window-lifecycle'
+import { resolveStagePointerBehavior } from '../utils/stage-pointer'
 import { shouldSampleStageTransparency } from '../utils/stage-three-transparency'
 
 const controlsIslandRef = ref<InstanceType<typeof ControlsIsland>>()
@@ -84,7 +85,8 @@ const { stageModelRenderer, stageModelSelectedUrl } = storeToRefs(settingsStore)
 const modelStore = useModelStore()
 const { sceneMutationLocked, scenePhase } = storeToRefs(modelStore)
 const { stagePaused } = storeToRefs(useStageWindowLifecycleStore())
-const { fadeOnHoverEnabled } = storeToRefs(useControlsIslandStore())
+const controlsIslandStore = useControlsIslandStore()
+const { fadeOnHoverEnabled } = storeToRefs(controlsIslandStore)
 const modelSettingsRuntimeOwnerInstanceId = `tamagotchi-main-stage:${Math.random().toString(36).slice(2, 10)}`
 const { data: modelSettingsRuntimeChannelEvent, post: postModelSettingsRuntimeChannelEvent } = useBroadcastChannel<ModelSettingsRuntimeChannelEvent, ModelSettingsRuntimeChannelEvent>({ name: modelSettingsRuntimeSnapshotChannelName })
 const shouldUseThreeTransparencyHitTest = computed(() => shouldSampleStageTransparency({
@@ -180,45 +182,39 @@ const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() =
   })
 })
 
-watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, hearingDialogOpen, fadeOnHoverEnabled, stagePaused], () => {
-  if (stagePaused.value) {
-    isIgnoringMouseEvents.value = false
-    shouldFadeOnCursorWithin.value = false
-    setIgnoreMouseEvents([false, { forward: true }])
-    pause()
-    return
-  }
+// Fail-safe default: treat click-through as unavailable until the platform
+// probe answers, so a Linux session can never engage it during startup (see the
+// NOTICE in resolveStagePointerBehavior for why Linux must not click-through).
+const clickThroughAvailable = ref(false)
+const invokeIsLinux = useElectronEventaInvoke(electron.app.isLinux)
+onMounted(async () => {
+  // The tray-menu fade-on-hover toggle is the guaranteed escape hatch while
+  // the stage window ignores mouse events, so wire it before the platform
+  // probe can enable click-through.
+  controlsIslandStore.initializeFadeOnHoverBridge()
+  clickThroughAvailable.value = !(await invokeIsLinux())
+})
 
-  if (hearingDialogOpen.value) {
-    // Hearing dialog/drawer is open; keep window interactive
-    isIgnoringMouseEvents.value = false
-    shouldFadeOnCursorWithin.value = false
-    setIgnoreMouseEvents([false, { forward: true }])
-    pause()
-    return
-  }
+watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, hearingDialogOpen, fadeOnHoverEnabled, stagePaused, clickThroughAvailable], () => {
+  const behavior = resolveStagePointerBehavior({
+    stagePaused: stagePaused.value,
+    hearingDialogOpen: hearingDialogOpen.value,
+    insideControls: !isOutsideFor250Ms.value || !isOutsideStatusIslandFor250Ms.value,
+    nearBorder: isAroundWindowBorderFor250Ms.value,
+    fadeOnHoverEnabled: fadeOnHoverEnabled.value,
+    clickThroughAvailable: clickThroughAvailable.value,
+    isOutsideWindow: isOutsideWindow.value,
+    isTransparent: isTransparent.value,
+  })
 
-  const insideControls = !isOutsideFor250Ms.value || !isOutsideStatusIslandFor250Ms.value
-  const nearBorder = isAroundWindowBorderFor250Ms.value
+  isIgnoringMouseEvents.value = behavior.ignoreMouseEvents
+  shouldFadeOnCursorWithin.value = behavior.fadeOnCursorWithin
+  setIgnoreMouseEvents([behavior.ignoreMouseEvents, { forward: true }])
 
-  if (insideControls || nearBorder) {
-    // Inside interactive controls or near resize border: do NOT ignore events
-    isIgnoringMouseEvents.value = false
-    shouldFadeOnCursorWithin.value = false
-    setIgnoreMouseEvents([false, { forward: true }])
+  if (behavior.trackCursorTransparency)
+    resume()
+  else
     pause()
-  }
-  else {
-    const fadeEnabled = fadeOnHoverEnabled.value
-    // Otherwise allow click-through while we fade UI based on transparency (when enabled)
-    isIgnoringMouseEvents.value = fadeEnabled
-    shouldFadeOnCursorWithin.value = fadeEnabled && !isOutsideWindow.value && !isTransparent.value
-    setIgnoreMouseEvents([fadeEnabled, { forward: true }])
-    if (fadeEnabled)
-      resume()
-    else
-      pause()
-  }
 })
 
 // Emit runtime snapshot on change and on request from settings panel

@@ -53,6 +53,7 @@ import { initializeElectronAuthCallbackBridge } from './bridges/electron-auth-ca
 import { initializeStageThreeRuntimeTraceBridge } from './bridges/stage-three-runtime-trace'
 import { useLanguage } from './composables/use-language'
 import { createChatSyncWindowLifecycle, resolveInitialChatSyncRoutePath } from './stores/chat-sync-lifecycle'
+import { useDesktopControlToolsStore } from './stores/desktop-control-tools'
 import { useTamagotchiMcpToolsStore } from './stores/mcp-tools'
 import { useTamagotchiPluginToolsStore } from './stores/plugin-tools'
 import { useServerChannelSettingsStore } from './stores/settings/server-channel'
@@ -84,6 +85,7 @@ function createFullStageRuntime() {
   const pluginHostInspectorStore = usePluginHostInspectorStore()
   const mcpToolsStore = useTamagotchiMcpToolsStore()
   const pluginToolsStore = useTamagotchiPluginToolsStore()
+  const desktopControlToolsStore = useDesktopControlToolsStore()
   const stageWindowLifecycleStore = useStageWindowLifecycleStore()
   const settingsAudioDeviceStore = useSettingsAudioDevice()
   const artistryStore = useArtistryStore()
@@ -165,6 +167,9 @@ function createFullStageRuntime() {
     console.warn('[App] Failed to refresh MCP runtime tools:', error)
   })
   void refreshPluginRuntimeTools()
+  void desktopControlToolsStore.initialize().catch((error) => {
+    console.warn('[App] Failed to initialize desktop control tools:', error)
+  })
 
   watch([activeProvider, artistryGlobals, activeModel, defaultPromptPrefix, providerOptions], () => {
     if (activeProvider.value) {

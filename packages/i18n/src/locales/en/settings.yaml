@@ -290,6 +290,13 @@ pages:
         setLinkFailed: We could not send the password setup link.
         passwordMismatch: New password and confirmation do not match.
         passwordSameAsCurrent: New password must differ from the current one.
+    sync:
+      tab: Sync
+      title: Sync
+      description: Control what this device syncs with the cloud while signed in.
+      chatSync:
+        label: Chat cloud sync
+        description: When off, chats stay on this device even while signed in — nothing is uploaded, and cloud copies are never merged back.
     danger:
       tab: Danger Zone
       title: Danger Zone
@@ -420,7 +427,7 @@ pages:
     sections:
       chats:
         title: Chat sessions
-        description: Export or import saved chat sessions.
+        description: Export or import saved chat sessions, together with character cards and consolidated memories.
         export: Export chats
         import: Import chats
         delete: Delete all chat sessions
@@ -621,6 +628,9 @@ pages:
             title: Model
       title: Consciousness
     description: Thinking, vision, speech synthesis, gaming, etc.
+    gaming-chess:
+      description: Play chess or Chinese chess (xiangqi) against a local engine.
+      title: Chess
     gaming-factorio:
       description: Playing Factorio!
       title: Factorio
@@ -691,12 +701,48 @@ pages:
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence
               filtering had no effect on the last transcription.
-    memory-long-term:
-      description: Long-term memory specific settings and management
-      title: Long-Term Memory
-    memory-short-term:
-      description: Short-term memory specific settings and management
-      title: Short-Term Memory
+    memory:
+      title: Memory
+      description: The model consolidates conversation into long- and short-term memory
+      summarization-model:
+        title: Summarization Model
+        description: The model used to summarize older conversation into memory and classify it as long- or short-term. Choose it independently from your core model.
+      cadence:
+        title: Consolidation Cadence
+        trigger-label: Trigger after rounds
+        trigger-desc: Start a consolidation pass once the conversation reaches this many rounds.
+        retain-label: Keep recent rounds
+        retain-desc: How many of the most recent rounds stay in the live context verbatim.
+      prompt:
+        title: Consolidation preferences
+        description: Extra guidance for the summarization model — what to remember, what to ignore, how to judge importance. Applied to every consolidation pass.
+        placeholder: e.g. Focus on my preferences and long-running plans; ignore small talk and greetings.
+      manual:
+        title: Consolidate manually
+        description: 'Compress the current conversation right now: recent rounds stay verbatim, everything older is summarized into long- or short-term memory.'
+        button: Consolidate now
+        running: Consolidating…
+        done: Consolidated {rounds} rounds into {memories} memories.
+        nothing: Nothing to consolidate — all recent rounds are within the retained window.
+        busy: A consolidation pass is already running, please wait.
+        error: 'Consolidation failed: {error}'
+      undo:
+        button: Undo last pass
+        running: Undoing…
+        done: Undid the last pass — {rounds} rounds restored, its memories removed. {remaining} more can be undone.
+        nothing: Nothing to undo — no reversible consolidation pass remains.
+        available: The last {count} consolidation passes can be undone.
+        error: 'Undo failed: {error}'
+      no-provider: No summarization model configured. Add a provider first.
+      kinds:
+        all: All
+        long: Long-term
+        short: Short-term
+      list:
+        title: Stored Memories
+        empty: No memories yet. They appear here after the first consolidation pass.
+        importance: Importance
+        refresh: Refresh
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
@@ -706,6 +752,18 @@ pages:
       token-description: Your Discord bot token
       token-placeholder: Enter your Discord bot token
       configured: Discord is properly configured!
+    messaging-qq:
+      description: Chat over QQ
+      title: QQ
+      enable: Enable QQ Integration
+      enable-description: Allow AIRI to interact through QQ
+      bot-uin: Bot QQ Number
+      bot-uin-description: The bot's own QQ number, used for mention detection in groups
+      bot-uin-placeholder: Enter the bot's QQ number
+      napcat-token: NapCat Access Token
+      napcat-token-description: NapCat access_token, leave empty if not set
+      napcat-token-placeholder: Leave empty for no authentication
+      configured: QQ is properly configured!
     speech:
       description: Speech synthesis
       sections:
@@ -758,6 +816,25 @@ pages:
     vision:
       description: Vision
       title: Vision
+    desktop-control:
+      title: Desktop control
+      description: Let AIRI see your screen and move the mouse and keyboard
+      enable:
+        label: Enable desktop control
+        description: Give AIRI a screenshot tool plus mouse and keyboard control during chat
+      mouse:
+        label: Allow mouse control
+        description: AIRI can move, click, and scroll the real mouse
+      keyboard:
+        label: Allow keyboard control
+        description: AIRI can type text and press shortcuts in the focused window
+      status:
+        title: Input backend
+        ready: 'Ready — using {backend}'
+        unavailable: Mouse and keyboard control is unavailable
+        desktop-only: Desktop control needs the AIRI desktop app
+      vision-hint: The "look at screen" ability uses your Vision module's model. Configure one in Vision settings.
+      safety: When enabled, AIRI can really move your cursor and press keys during a conversation. Keep an eye on it and switch this off when you are done.
     x:
       description: X / Twitter browsing and usage
       title: X / Twitter

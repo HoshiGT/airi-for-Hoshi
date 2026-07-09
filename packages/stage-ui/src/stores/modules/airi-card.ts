@@ -170,6 +170,30 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     return cards.value.get(id)
   }
 
+  /** Snapshot of every card keyed by id, for the chat backup file. */
+  function exportCards(): Record<string, AiriCard> {
+    return Object.fromEntries(cards.value)
+  }
+
+  /**
+   * Merge cards from a chat backup, returning the ids actually added.
+   *
+   * Only ADDS cards whose id is absent. Ids are per-install nanoids (plus the
+   * ever-present 'default'), so a collision means the same card lineage
+   * already lives here — this install's copy wins, protecting local edits
+   * from being rolled back by an older backup.
+   */
+  function importCards(imported: Record<string, Card>): string[] {
+    const added: string[] = []
+    for (const [id, card] of Object.entries(imported)) {
+      if (cards.value.has(id))
+        continue
+      cards.value.set(id, newAiriCard(card))
+      added.push(id)
+    }
+    return added
+  }
+
   function updateActiveCardModules(patch: (extension: AiriExtension) => Partial<AiriExtension['modules']>) {
     const cardId = activeCardId.value
     const card = cards.value.get(cardId)
@@ -478,6 +502,8 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     updateActiveCardSpeech,
     updateActiveCardVision,
     getCard,
+    exportCards,
+    importCards,
     resetState,
     initialize,
 

@@ -2,6 +2,9 @@
 .trash/
 .DS_Store
 
+# Local engine downloads (large native/GUI bundles, not committed)
+/*.zip
+
 # Node.js
 node_modules
 

@@ -1,5 +1,6 @@
 export * from './app'
 export * from './auto-updater'
+export * from './desktop-control'
 export * from './global-shortcut'
 export * from './powerMonitor'
 export * from './screen'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { OnboardingDialog, OnboardingStepAnalyticsNotice, ToasterRoot } from '@proj-airi/stage-ui/components'
-import { useInferencePreload } from '@proj-airi/stage-ui/composables'
+import { useInferencePreload, useOllamaKeepWarm } from '@proj-airi/stage-ui/composables'
 import { isPosthogAvailableInBuild, useSharedAnalyticsStore } from '@proj-airi/stage-ui/stores/analytics'
 import { useCharacterOrchestratorStore } from '@proj-airi/stage-ui/stores/character'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -39,6 +39,11 @@ const { isDark } = useTheme()
 const cardStore = useAiriCardStore()
 const analyticsStore = useSharedAnalyticsStore()
 const inferencePreload = useInferencePreload()
+
+// Keep a local Ollama brain resident while Airi is open so sporadic messages
+// (e.g. incoming QQ DMs) don't pay the model-load latency. No-op unless the
+// active chat provider is Ollama.
+useOllamaKeepWarm()
 
 const primaryColor = computed(() => {
   return isDark.value

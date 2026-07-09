@@ -170,6 +170,10 @@ export const useModsServerChannelStore = defineStore('mods:channels:proj-airi:se
           connected.value = true
           flush()
           initializeListeners()
+          // Resolve the initializing promise for connections without an auth token.
+          // With a token, module:authenticated fires first and resolves it; calling
+          // resolve() again here is a no-op on an already-settled Promise.
+          resolve()
 
           if (isReconnect) {
             for (const callback of reconnectedCallbacks) {
@@ -191,13 +195,13 @@ export const useModsServerChannelStore = defineStore('mods:channels:proj-airi:se
       client.value.onEvent('module:authenticated', (event) => {
         if (event.data.authenticated) {
           if (!hasEverConnected.value) {
-            // First connection can flush immediately after authentication.
-            connected.value = true
-            flush()
             initializeListeners()
           }
-          // On reconnect, wait for onReady (after announce) before flushing business events.
-          resolve()
+          // Do NOT resolve() here. module:authenticated fires while the transport is still in
+          // 'preparing' state (announce handshake not yet complete). Calling resolve() here
+          // makes ensureConnected() return too early: any send() attempt at that point hits
+          // transport.send() which requires state === 'ready' and silently drops the message.
+          // resolve() is called in onReady() once the transport reaches 'ready'.
 
           return
         }

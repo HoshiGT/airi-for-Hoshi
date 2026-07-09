@@ -10,7 +10,7 @@ import { useProviderValidation } from '@proj-airi/stage-ui/composables/use-provi
 import { getDefinedProvider } from '@proj-airi/stage-ui/libs'
 import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
-import { FieldInput, FieldRange } from '@proj-airi/ui'
+import { FieldCombobox, FieldInput, FieldRange } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -94,13 +94,31 @@ watch(
 // Check if API key is configured
 const apiKeyConfigured = computed(() => !!providers.value[providerId]?.apiKey)
 
+// TTS models discovered from the server's /v1/models (empty when the server
+// does not support listing; the manual model input covers that case)
+const providerModels = computed(() => providersStore.getModelsForProvider(providerId))
+const isLoadingModels = computed(() => providersStore.isLoadingModels[providerId] || false)
+
 // Ensure provider config is initialized on mount
-onMounted(() => {
+onMounted(async () => {
   providers.value[providerId] ??= {}
   // Defaults only when unset (null/undefined); empty strings are kept intentionally
   providers.value[providerId].model ??= defaultModel
   providers.value[providerId].voice ??= defaultVoice
+
+  if (providers.value[providerId].baseUrl)
+    await providersStore.fetchModelsForProvider(providerId)
 })
+
+// Refetch the model listing when the server target changes. Only the base URL
+// is required: local speech servers usually run without authentication.
+watch(
+  [() => providers.value[providerId]?.apiKey, () => providers.value[providerId]?.baseUrl],
+  async ([, newBaseUrl]) => {
+    if (newBaseUrl)
+      await providersStore.fetchModelsForProvider(providerId)
+  },
+)
 
 // Generate speech with OpenAI-compatible parameters
 async function handleGenerateSpeech(input: string, voiceId: string, _useSSML: boolean, modelId?: string) {
@@ -167,8 +185,18 @@ const apiKeyPlaceholder = computed(() => {
   >
     <!-- Voice settings specific to OpenAI Compatible -->
     <template #voice-settings>
-      <!-- Model input -->
+      <!-- Model selection: dropdown when the server lists models, manual input otherwise -->
+      <FieldCombobox
+        v-if="providerModels.length > 0"
+        v-model="model"
+        label="Model"
+        description="Select the TTS model to use for speech generation"
+        :options="providerModels.map(m => ({ value: m.id, label: m.name }))"
+        :disabled="isLoadingModels"
+        placeholder="Select a model..."
+      />
       <FieldInput
+        v-else
         v-model="model"
         label="Model"
         description="Enter the TTS model to use for speech generation"

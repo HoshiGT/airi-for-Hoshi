@@ -174,16 +174,16 @@ onMounted(async () => {
     console.warn(`Invalid transcription model "${currentModel}" detected. Resetting to default "whisper-1".`)
     model.value = 'whisper-1'
   }
-  // Load models if API key and base URL are configured
-  if (apiKey.value && baseUrl.value) {
-    await providersStore.loadModelsForConfiguredProviders()
+  // Load the model listing. Only the base URL is required: local ASR servers
+  // (whisper.cpp server, speaches, ...) usually run without authentication.
+  if (baseUrl.value) {
     await providersStore.fetchModelsForProvider(providerId)
   }
 })
 
-// Watch for API key and base URL changes to reload models
-watch([apiKey, baseUrl], async ([newApiKey, newBaseUrl]) => {
-  if (newApiKey && newBaseUrl) {
+// Refetch the model listing when the server target changes
+watch([apiKey, baseUrl], async ([, newBaseUrl]) => {
+  if (newBaseUrl) {
     await providersStore.fetchModelsForProvider(providerId)
   }
 })

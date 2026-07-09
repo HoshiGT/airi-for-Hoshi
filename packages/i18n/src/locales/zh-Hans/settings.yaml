@@ -276,6 +276,13 @@ pages:
         setLinkFailed: 暂时无法发送用于重设密码的链接
         passwordMismatch: 新密码和确认密码不匹配
         passwordSameAsCurrent: 新密码和当前密码应当是不同的
+    sync:
+      tab: 同步
+      title: 同步
+      description: 控制登录后本设备与云端之间的数据同步。
+      chatSync:
+        label: 聊天记录云同步
+        description: 关闭后即使已登录，聊天记录也只保存在本设备，不会上传到云端，云端记录也不会合并回来。
     danger:
       tab: 危险操作
       title: 危险操作
@@ -401,7 +408,7 @@ pages:
     sections:
       chats:
         title: 聊天会话
-        description: 导出或导入保存的聊天会话。
+        description: 导出或导入保存的聊天会话，包含角色卡与整理出的记忆。
         export: 导出聊天记录
         import: 导入聊天记录
         delete: 删除所有聊天会话
@@ -597,6 +604,9 @@ pages:
             title: 模型
       title: 意识
     description: 思维，视觉，言语综合，游戏等
+    gaming-chess:
+      description: 和本地引擎下国际象棋或中国象棋。
+      title: 象棋
     gaming-factorio:
       description: 一起玩 Factorio！
       title: 异星工厂 Factorio
@@ -658,12 +668,48 @@ pages:
               注意：如果您的提供商不支持 verbose_json 结果处理，此设置将不会有任何效果。
             verbose-json-unsupported: >-
               如果您的提供商没有返回 verbose_json 结果。置信度阈值将不会影响转录。
-    memory-long-term:
-      description: 长期记忆
-      title: 长期记忆
-    memory-short-term:
-      description: 短期记忆
-      title: 短期记忆
+    memory:
+      title: 记忆
+      description: 由模型自动把对话整理成长期与短期记忆
+      summarization-model:
+        title: 总结模型
+        description: 用于把较早的对话总结成记忆、并判定为长期或短期的模型。可独立于核心模型单独选择。
+      cadence:
+        title: 整理节奏
+        trigger-label: 触发轮数
+        trigger-desc: 对话达到该轮数时启动一次整理。
+        retain-label: 保留最近轮数
+        retain-desc: 有多少最近的对话轮次原文保留在活动上下文中。
+      prompt:
+        title: 整理偏好设定
+        description: 附加给总结模型的偏好说明——记什么、忽略什么、如何判断重要性。每次整理都会生效。
+        placeholder: 例如：重点记录我的偏好和长期计划，忽略寒暄和客套话。
+      manual:
+        title: 手动整理
+        description: 立即压缩当前对话：保留最近轮次，其余交给模型总结并归入长期或短期记忆。
+        button: 立即整理
+        running: 整理中…
+        done: 已整理 {rounds} 轮对话，生成 {memories} 条记忆。
+        nothing: 没有可整理的内容——最近的对话都在保留范围内。
+        busy: 已有一次整理在进行中，请稍候。
+        error: 整理失败：{error}
+      undo:
+        button: 撤销上次整理
+        running: 撤销中…
+        done: 已撤销上次整理——恢复 {rounds} 轮对话，删除其生成的记忆。还可再撤销 {remaining} 次。
+        nothing: 没有可撤销的整理记录。
+        available: 最近 {count} 次整理可以撤销。
+        error: 撤销失败：{error}
+      no-provider: 尚未配置总结模型，请先添加一个服务来源。
+      kinds:
+        all: 全部
+        long: 长期
+        short: 短期
+      list:
+        title: 已存记忆
+        empty: 暂无记忆。首次整理后会显示在这里。
+        importance: 重要性
+        refresh: 刷新
     messaging-discord:
       description: Discord 发消息和语音聊天
       title: Discord
@@ -673,6 +719,18 @@ pages:
       token-description: 您的Discord机器人令牌
       token-placeholder: 输入您的Discord机器人令牌
       configured: Discord已正确配置！
+    messaging-qq:
+      description: QQ 发消息和聊天
+      title: QQ
+      enable: 启用 QQ 集成
+      enable-description: 允许 AIRI 通过 QQ 进行互动
+      bot-uin: 机器人 QQ 号
+      bot-uin-description: bot 自身的 QQ 号，用于群聊艾特检测
+      bot-uin-placeholder: 输入 bot 的 QQ 号
+      napcat-token: NapCat 访问令牌
+      napcat-token-description: NapCat 的 access_token，未设置可留空
+      napcat-token-placeholder: 留空表示无需验证
+      configured: QQ 已正确配置！
     speech:
       description: 语音合成
       sections:
@@ -722,6 +780,25 @@ pages:
     vision:
       description: 视觉
       title: 视觉
+    desktop-control:
+      title: 桌面控制
+      description: 让 AIRI 看到你的屏幕并操作鼠标和键盘
+      enable:
+        label: 启用桌面控制
+        description: 在聊天中给 AIRI 截屏工具以及鼠标、键盘控制能力
+      mouse:
+        label: 允许控制鼠标
+        description: AIRI 可以移动、点击和滚动真实鼠标
+      keyboard:
+        label: 允许控制键盘
+        description: AIRI 可以在当前聚焦的窗口里输入文字和按快捷键
+      status:
+        title: 输入后端
+        ready: '就绪 —— 正在使用 {backend}'
+        unavailable: 鼠标和键盘控制当前不可用
+        desktop-only: 桌面控制需要 AIRI 桌面版
+      vision-hint: “看屏幕”能力使用视觉模块所配置的模型，请先在视觉设置里配置一个。
+      safety: 启用后，AIRI 在对话中真的会移动你的光标并按键。请留意它的操作，用完后记得关闭。
     x:
       description: X / Twitter 的浏览和使用
       title: X / Twitter

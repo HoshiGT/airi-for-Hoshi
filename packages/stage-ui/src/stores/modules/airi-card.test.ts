@@ -1,3 +1,5 @@
+import type { Card } from '@proj-airi/ccc'
+
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -169,5 +171,44 @@ describe('airi-card store', () => {
 
     expect(cardStore.activeCard?.extensions.airi.modules.speech.voicePack?.params).toEqual({ pitch: '+20%' })
     expect(cardStore.activeCard?.extensions.airi.modules.speech.voicePack?.voiceId).toBe('voice-a')
+  })
+
+  it('importCards adds missing cards but never overwrites local ones', () => {
+    const cardStore = useAiriCardStore()
+    cardStore.initialize()
+
+    const added = cardStore.importCards({
+      // Collides with the ever-present default card: local copy must win.
+      'default': { name: 'Foreign ReLU', version: '9.9.9' },
+      'card-foreign-1': { name: 'Yuki', version: '1.0.0', description: 'from backup' },
+    })
+
+    expect(added).toEqual(['card-foreign-1'])
+    expect(cardStore.getCard('default')?.name).toBe('ReLU')
+    const imported = cardStore.getCard('card-foreign-1')
+    expect(imported?.name).toBe('Yuki')
+    expect(imported?.description).toBe('from backup')
+    // Backup cards without an airi extension are normalized on the way in so
+    // downstream module lookups never hit an undefined extension.
+    expect(imported?.extensions?.airi?.modules).toBeDefined()
+  })
+
+  it('exportCards round-trips through JSON into a fresh store', () => {
+    const cardStore = useAiriCardStore()
+    cardStore.initialize()
+    const yukiId = cardStore.addCard({ name: 'Yuki', version: '1.0.0' })
+
+    // The backup file is JSON, so the Map must survive as a plain record.
+    const exported = JSON.parse(JSON.stringify(cardStore.exportCards())) as Record<string, Card>
+    expect(Object.keys(exported).sort()).toEqual(['default', yukiId].sort())
+
+    setActivePinia(createPinia())
+    const freshStore = useAiriCardStore()
+    freshStore.initialize()
+
+    const added = freshStore.importCards(exported)
+    // 'default' already exists on the fresh install; only the nanoid card lands.
+    expect(added).toEqual([yukiId])
+    expect(freshStore.getCard(yukiId)?.name).toBe('Yuki')
   })
 })

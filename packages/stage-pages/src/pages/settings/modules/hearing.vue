@@ -476,6 +476,21 @@ watch(activeTranscriptionProvider, async (provider) => {
   }
 }, { immediate: true })
 
+// Transcription runs off activeTranscriptionModel, but syncOpenAICompatibleSettings()
+// re-seeds it from the provider config on every visit — without a write-back, a model
+// picked here would be reverted to the provider-config value next time. Empty values
+// are skipped so transient resets cannot wipe the saved selection.
+watch(activeTranscriptionModel, (model) => {
+  if (activeTranscriptionProvider.value !== 'openai-compatible-audio-transcription')
+    return
+  if (!model)
+    return
+
+  const providerConfig = providersStore.getProviderConfig(activeTranscriptionProvider.value)
+  if (providerConfig)
+    providerConfig.model = model
+})
+
 onMounted(async () => {
   // Audio devices are loaded on demand when user requests them
   syncOpenAICompatibleSettings()
@@ -612,12 +627,18 @@ onUnmounted(() => {
               <span>{{ t('settings.pages.modules.consciousness.sections.section.provider-model-selection.loading') }}</span>
             </div>
 
-            <!-- Error state -->
-            <ErrorContainer
-              v-else-if="activeProviderModelError && supportsModelListing"
-              :title="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.error')"
-              :error="activeProviderModelError"
-            />
+            <!-- Error state: keep manual entry available so a failed listing does not block configuration -->
+            <template v-else-if="activeProviderModelError && supportsModelListing">
+              <ErrorContainer
+                :title="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.error')"
+                :error="activeProviderModelError"
+              />
+              <FieldInput
+                :model-value="activeTranscriptionModel || activeCustomModelName || ''"
+                :placeholder="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.manual_model_placeholder')"
+                @update:model-value="updateCustomModelName"
+              />
+            </template>
 
             <!-- Manual input for providers without model listing or when no models are available -->
             <div

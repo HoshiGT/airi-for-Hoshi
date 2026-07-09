@@ -5,6 +5,7 @@ import { useLive2dParams, useSettingsLive2d } from '@proj-airi/stage-ui-live2d'
 import { useModelStore } from '@proj-airi/stage-ui-three'
 
 import { useChatOrchestratorStore } from '../stores/chat'
+import { useMemoryService } from '../stores/chat/memory'
 import { useChatSessionStore } from '../stores/chat/session-store'
 import { useDisplayModelsStore } from '../stores/display-models'
 import { useMcpStore } from '../stores/mcp'
@@ -40,6 +41,7 @@ export function useDataMaintenance() {
   const mcpStore = useMcpStore()
   const onboardingStore = useOnboardingStore()
   const airiCardStore = useAiriCardStore()
+  const memoryService = useMemoryService()
 
   async function deleteAllModels() {
     await displayModelsStore.resetDisplayModels()
@@ -68,7 +70,13 @@ export function useDataMaintenance() {
 
   async function exportChatSessions() {
     const data = await chatStore.exportSessions()
-    return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const payload: ChatSessionsExport = {
+      ...data,
+      cards: airiCardStore.exportCards(),
+      activeCardId: airiCardStore.activeCardId,
+      memory: await memoryService.exportMemory(),
+    }
+    return new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   }
 
   function isChatSessionsPayload(payload: unknown): payload is ChatSessionsExport {
@@ -80,7 +88,26 @@ export function useDataMaintenance() {
   async function importChatSessions(payload: Record<string, unknown>) {
     if (!isChatSessionsPayload(payload))
       throw new Error('Invalid chat session export format')
+
+    // Cards must land before sessions: importSessions keeps a session's card
+    // linkage only when `cards.has(characterId)` — otherwise it re-homes the
+    // bucket onto the current card.
+    if (payload.cards)
+      airiCardStore.importCards(payload.cards)
+
     await chatStore.importSessions(payload)
+
+    if (payload.memory)
+      await memoryService.importMemory(payload.memory)
+
+    // Switch to the exporter's active card LAST, after importSessions has
+    // persisted the new index and broadcast the sessions-rewritten
+    // invalidation: the activeCardId watcher then lands on the imported
+    // bucket's active session (in other windows too, via localStorage sync
+    // arriving after the rehydrate broadcast). Switching earlier would let
+    // the watcher's ensure run against the pre-import index.
+    if (payload.activeCardId && payload.activeCardId !== airiCardStore.activeCardId && airiCardStore.cards.has(payload.activeCardId))
+      airiCardStore.activeCardId = payload.activeCardId
   }
 
   async function resetSettingsState() {

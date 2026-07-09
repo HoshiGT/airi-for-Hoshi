@@ -6,6 +6,7 @@ import type { ChatHistoryItem } from '../../types/chat'
 import type { ChatSessionMeta, ChatSessionRecord, ChatSessionsExport, ChatSessionsIndex } from '../../types/chat-session'
 
 import { errorMessageFrom } from '@moeru/std'
+import { useLocalStorage } from '@vueuse/core'
 import { cloneDeep } from 'es-toolkit'
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
@@ -49,7 +50,7 @@ const OUTBOX_MAX_ATTEMPTS = 5
 
 export const useChatSessionStore = defineStore('chat-session', () => {
   const { userId, token: authToken } = storeToRefs(useAuthStore())
-  const { activeCardId, systemPrompt } = storeToRefs(useAiriCardStore())
+  const { activeCardId, cards, systemPrompt } = storeToRefs(useAiriCardStore())
 
   const activeSessionId = ref<string>('')
   const sessionMessages = ref<Record<string, ChatHistoryItem[]>>({})
@@ -80,6 +81,16 @@ export const useChatSessionStore = defineStore('chat-session', () => {
   // reconnect catch up — that way the very first message in a session does
   // not get dropped while reconcile completes.
   const cloudSyncReady = ref(false)
+  /**
+   * User preference: mirror chats to the Airi cloud while signed in. When
+   * off, the store behaves fully local-first even for an authenticated user
+   * — no WS, no reconcile, no outbox pushes, no message pull/merge. Sessions
+   * still live in the signed-in user's local bucket, so flipping the switch
+   * never moves or hides data; it only stops the network mirror. Notably
+   * this keeps memory-consolidation trims durable: with sync off nothing
+   * re-merges the server's untrimmed copy back into the session.
+   */
+  const cloudSyncEnabled = useLocalStorage('settings/chat/cloud-sync-enabled', true)
   /**
    * Number of message sends + tombstone deletes waiting on cloud delivery.
    * Reactive so a UI banner can surface "N messages syncing" / "K failed".
@@ -498,16 +509,22 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       // where the server still has the row and re-creates the local mapping.
       // The reconcile-driven `drainTombstones` retries failed DELETEs.
       await enqueuePersist(() => chatSessionsRepo.addTombstone(currentUserId, cloudChatId))
-      getCloudMapper().deleteChat(cloudChatId).then(
-        async () => {
-          // Server confirmed the delete; reconcile will not see this id again,
-          // so we can drop the tombstone.
-          await enqueuePersist(() => chatSessionsRepo.removeTombstones(currentUserId, [cloudChatId]))
-        },
-        (err) => {
-          console.warn('[chat-sync] DELETE /api/v1/chats failed for', sessionId, errorMessageFrom(err))
-        },
-      )
+      // With sync disabled we still write the tombstone (above) but skip the
+      // network DELETE: if the user re-enables sync later, drainTombstones
+      // finishes the server-side delete instead of the adopt branch
+      // resurrecting the session.
+      if (cloudSyncEnabled.value) {
+        getCloudMapper().deleteChat(cloudChatId).then(
+          async () => {
+            // Server confirmed the delete; reconcile will not see this id again,
+            // so we can drop the tombstone.
+            await enqueuePersist(() => chatSessionsRepo.removeTombstones(currentUserId, [cloudChatId]))
+          },
+          (err) => {
+            console.warn('[chat-sync] DELETE /api/v1/chats failed for', sessionId, errorMessageFrom(err))
+          },
+        )
+      }
     }
 
     // If the deleted session was active, pick another for the same
@@ -623,6 +640,11 @@ export const useChatSessionStore = defineStore('chat-session', () => {
    * times; uses `meta.cloudMaxSeq` as the cursor.
    */
   async function pullCloudMessages(sessionId: string) {
+    // Explicit even though a disabled sync never opens the WS: a toggle-off
+    // mid-session leaves this the only guard between loadSession and a
+    // merge that would resurrect consolidated-away rounds.
+    if (!cloudSyncEnabled.value)
+      return
     if (!wsClient || wsClient.status() !== 'open')
       return
     const meta = sessionMetas.value[sessionId]
@@ -673,6 +695,10 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       const currentUserId = getCurrentUserId()
       if (currentUserId === 'local') {
         console.info('[chat-sync] reconcile skipped: anonymous user')
+        return
+      }
+      if (!cloudSyncEnabled.value) {
+        console.info('[chat-sync] reconcile skipped: cloud sync disabled by user')
         return
       }
 
@@ -852,6 +878,10 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       console.info('[chat-sync] WS skipped: anonymous user')
       return
     }
+    if (!cloudSyncEnabled.value) {
+      console.info('[chat-sync] WS skipped: cloud sync disabled by user')
+      return
+    }
     if (wsClient)
       return
 
@@ -973,6 +1003,11 @@ export const useChatSessionStore = defineStore('chat-session', () => {
   async function pushMessageToCloud(sessionId: string, message: { id: string, role: CloudSyncableRole, content: string }) {
     const userId = getCurrentUserId()
     if (userId === 'local')
+      return
+    // Gate BEFORE the outbox write: with sync off, enqueueing would grow the
+    // outbox unbounded and then flush every held message at once on a later
+    // re-enable — messages sent while off should stay local-only, period.
+    if (!cloudSyncEnabled.value)
       return
 
     const entry: ChatSendOutboxEntry = {
@@ -1276,6 +1311,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     }
 
     await createSession(characterId)
+    broadcastSessionsRewritten()
   }
 
   function getSessionMessages(sessionId: string) {
@@ -1346,27 +1382,198 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     if (payload.format !== 'chat-sessions-index:v1')
       return
 
-    index.value = cloneDeep(payload.index)
+    const currentUserId = getCurrentUserId()
+
+    // The export carries the EXPORTER's userId in the index and every meta.
+    // Trusting it would persist the index into the wrong per-user bucket
+    // (`local:chat/index/<exporterUserId>`), and the trailing
+    // `ensureActiveSessionForCharacter()` would see the userId mismatch and
+    // reload the stale pre-import index — the import would toast success yet
+    // be invisible after reload. Rekey everything to the current user so the
+    // imported sessions belong to whoever performed the import.
+    //
+    // The exporter's cloud mapping (`cloudChatId` / `cloudMaxSeq`) is
+    // stripped for the same ownership reason: it points at the exporter's
+    // account, and keeping it would let the next reconcile push this user's
+    // messages into another account's cloud chat. Imported sessions start
+    // local-only and get a fresh mapping on the next reconcile.
+    function rekeyImportedMeta(meta: ChatSessionMeta): ChatSessionMeta {
+      const rekeyed: ChatSessionMeta = { ...meta, userId: currentUserId }
+      delete rekeyed.cloudChatId
+      delete rekeyed.cloudMaxSeq
+      return rekeyed
+    }
+
+    // Re-home imported character buckets. Card ids are per-install nanoids,
+    // so an export from another install references cards this machine has
+    // never seen. Keeping those buckets under the foreign id would strand
+    // the imported sessions: `ensureActiveSessionForCharacter` would mint a
+    // fresh empty session for the current card and the user would have to
+    // dig the import out of the drawer. Buckets whose card DOES exist
+    // locally keep their card linkage — switching to that card surfaces
+    // them. We deliberately do not match cards by name: names are
+    // user-editable and collide across installs.
+    const currentCharacterId = getCurrentCharacterId()
+    const importedIndex: ChatSessionsIndex = { userId: currentUserId, characters: {} }
+    const importedMetas: Record<string, ChatSessionMeta> = {}
+    // Exported active pointers that survived into each target bucket, so the
+    // import can land on the exporter's active conversation below.
+    const activePointerCandidates: Record<string, string[]> = {}
+    for (const [characterId, character] of Object.entries(payload.index.characters)) {
+      const keepCharacter = characterId === currentCharacterId || cards.value.has(characterId)
+      const targetCharacterId = keepCharacter ? characterId : currentCharacterId
+      const target = importedIndex.characters[targetCharacterId]
+        ??= { activeSessionId: '', sessions: {} }
+      for (const [sessionId, meta] of Object.entries(character.sessions)) {
+        const rekeyed: ChatSessionMeta = { ...rekeyImportedMeta(meta), characterId: targetCharacterId }
+        target.sessions[sessionId] = rekeyed
+        importedMetas[sessionId] = rekeyed
+      }
+      if (character.sessions[character.activeSessionId])
+        (activePointerCandidates[targetCharacterId] ??= []).push(character.activeSessionId)
+    }
+
+    // Sessions present in the payload but missing from its index (truncated
+    // or hand-edited files) re-home to the current card as well — metas are
+    // hydrated from the index on reload, so a session outside every bucket
+    // would silently vanish after a restart.
+    for (const [sessionId, record] of Object.entries(payload.sessions)) {
+      if (importedMetas[sessionId])
+        continue
+      const rekeyed: ChatSessionMeta = { ...rekeyImportedMeta(record.meta), characterId: currentCharacterId }
+      const target = importedIndex.characters[currentCharacterId]
+        ??= { activeSessionId: '', sessions: {} }
+      target.sessions[sessionId] = rekeyed
+      importedMetas[sessionId] = rekeyed
+    }
+
+    // Land each bucket on a real conversation instead of letting
+    // ensureActiveSessionForCharacter mint an empty one: prefer the
+    // exporter's active pointer (latest-updated wins when several merged
+    // buckets contribute one), else the bucket's most recently updated
+    // session, else '' for an empty bucket.
+    for (const [characterId, target] of Object.entries(importedIndex.characters)) {
+      const candidates = activePointerCandidates[characterId] ?? Object.keys(target.sessions)
+      const byRecency = (a: string, b: string) => (target.sessions[b]?.updatedAt ?? 0) - (target.sessions[a]?.updatedAt ?? 0)
+      target.activeSessionId = [...candidates].sort(byRecency)[0] ?? ''
+    }
+
+    index.value = importedIndex
     sessionMessages.value = {}
     sessionMetas.value = {}
     sessionGenerations.value = {}
     loadedSessions.clear()
     loadingSessions.clear()
 
-    await enqueuePersist(() => chatSessionsRepo.saveIndex(cloneDeep(payload.index)))
+    // Hydrate ALL imported metas (including message-less shells) so the
+    // drawer lists them immediately — without this, shells only appear
+    // after the next reload's index hydration.
+    for (const [sessionId, meta] of Object.entries(importedMetas)) {
+      sessionMetas.value[sessionId] = meta
+      ensureGeneration(sessionId)
+    }
+
+    await enqueuePersist(() => chatSessionsRepo.saveIndex(cloneDeep(importedIndex)))
 
     for (const [sessionId, record] of Object.entries(payload.sessions)) {
-      sessionMetas.value[sessionId] = cloneDeep(record.meta)
+      const meta = importedMetas[sessionId]
       sessionMessages.value[sessionId] = cloneDeep(record.messages)
-      ensureGeneration(sessionId)
       await enqueuePersist(() => chatSessionsRepo.saveSession(sessionId, {
-        meta: cloneDeep(record.meta),
+        meta: cloneDeep(meta),
         messages: cloneDeep(record.messages),
       }))
     }
 
     await ensureActiveSessionForCharacter()
+    broadcastSessionsRewritten()
   }
+
+  /**
+   * Reload the current user's sessions from disk after another same-origin
+   * context rewrote them — e.g. the desktop settings window importing a
+   * backup while the stage window keeps its own store instance over the
+   * same IndexedDB.
+   *
+   * Clears in-memory session state but NOT cloud/WS state (the user did not
+   * change), then re-runs the active-session hydrate so `index`,
+   * `sessionMetas`, and the active session's messages reflect what is now
+   * persisted. Non-active sessions' messages reload lazily via `loadSession`
+   * as usual.
+   */
+  async function rehydrateFromDisk() {
+    // Invalidate any in-flight hydrate so its post-await writes cannot
+    // resurrect the pre-rewrite state we are about to discard (same epoch
+    // protocol as `clearInMemoryState`).
+    ensureActiveEpoch += 1
+    ensureActivePromise = null
+    sessionMessages.value = {}
+    sessionMetas.value = {}
+    sessionGenerations.value = {}
+    loadedSessions.clear()
+    loadingSessions.clear()
+    index.value = null
+    activeSessionId.value = ''
+    await ensureActiveSessionForCharacter()
+  }
+
+  // Cross-context invalidation for bulk on-disk rewrites (import / reset).
+  //
+  // The desktop app runs several renderer windows (stage `/`, chat `/chat`,
+  // settings) each holding an independent Pinia instance of this store over
+  // the same IndexedDB. A rewrite performed in the settings window would
+  // otherwise stay invisible to the stage window — whose chat-sync authority
+  // keeps broadcasting its stale in-memory snapshot to follower windows, and
+  // whose next persist would overwrite the imported data on disk.
+  //
+  // Envelope: `{ senderId }` — no payload; receivers reread disk, so there
+  // is nothing else to correlate. `senderId` only filters out the writer's
+  // own echo (BroadcastChannel does not loop back in browsers, but the
+  // guard keeps the contract explicit and safe under test doubles).
+  //
+  // Window-guarded: node test envs and SSR have no `window`, so the channel
+  // is absent there and `broadcastSessionsRewritten` is a no-op.
+  const invalidationSenderId = nanoid()
+  let invalidationChannel: BroadcastChannel | null = null
+  if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+    invalidationChannel = new BroadcastChannel('airi:chat-sessions:rewritten')
+    invalidationChannel.addEventListener('message', (event: MessageEvent<{ senderId?: string }>) => {
+      if (event.data?.senderId === invalidationSenderId)
+        return
+      void rehydrateFromDisk()
+    })
+  }
+
+  function broadcastSessionsRewritten() {
+    invalidationChannel?.postMessage({ senderId: invalidationSenderId })
+  }
+
+  /**
+   * Wait for every queued persist to land, then broadcast the cross-context
+   * invalidation. For callers OUTSIDE this store that bulk-rewrite session
+   * content through public setters (e.g. manual memory consolidation trimming
+   * archived rounds from the settings window) — receivers reread disk, so the
+   * broadcast must not race the writes it announces.
+   */
+  async function notifySessionsRewritten() {
+    // Persist queue is FIFO: an empty barrier task resolves only after all
+    // previously enqueued writes (setSessionMessages → persistSession, index
+    // saves) have settled.
+    await enqueuePersist(async () => {})
+    broadcastSessionsRewritten()
+  }
+
+  // Toggling the preference takes effect immediately: off tears the socket
+  // down (in-flight reconcile IIFEs bail via the epoch bump inside
+  // teardown); on reconnects, and the WS `open` handler runs the catch-up
+  // reconcile — no separate trigger needed here.
+  watch(cloudSyncEnabled, (enabled) => {
+    if (!enabled) {
+      teardownCloudWsClient()
+      return
+    }
+    if (getCurrentUserId() !== 'local')
+      ensureCloudWsClient()
+  })
 
   watch([userId, activeCardId], () => {
     if (!ready.value)
@@ -1427,11 +1634,14 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     forkSession,
     exportSessions,
     importSessions,
+    rehydrateFromDisk,
+    notifySessionsRewritten,
     createSession,
     loadSession,
     deleteSession,
 
     cloudSyncReady,
+    cloudSyncEnabled,
     outboxPendingCount,
     pushMessageToCloud,
   }

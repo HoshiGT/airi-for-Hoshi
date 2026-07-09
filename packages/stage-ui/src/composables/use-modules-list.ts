@@ -8,10 +8,14 @@ import factorioIcon from '../assets/factorio-simple.png'
 
 import { useArtistryStore } from '../stores/modules/artistry'
 import { useConsciousnessStore } from '../stores/modules/consciousness'
+import { useDesktopControlStore } from '../stores/modules/desktop-control'
 import { useDiscordStore } from '../stores/modules/discord'
+import { useChessStore } from '../stores/modules/gaming-chess'
 import { useFactorioStore } from '../stores/modules/gaming-factorio'
 import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
 import { useHearingStore } from '../stores/modules/hearing'
+import { useMemoryStore } from '../stores/modules/memory'
+import { useQQStore } from '../stores/modules/messaging-qq'
 import { useSpeechStore } from '../stores/modules/speech'
 import { useTwitterStore } from '../stores/modules/twitter'
 import { useVisionStore } from '../stores/modules/vision'
@@ -37,10 +41,14 @@ export function useModulesList() {
   const hearingStore = useHearingStore()
   const visionStore = useVisionStore()
   const discordStore = useDiscordStore()
+  const qqStore = useQQStore()
   const twitterStore = useTwitterStore()
   const minecraftStore = useMinecraftStore()
   const factorioStore = useFactorioStore()
+  const chessStore = useChessStore()
   const artistryStore = useArtistryStore()
+  const memoryStore = useMemoryStore()
+  const desktopControlStore = useDesktopControlStore()
   const beatSyncState = ref<BeatSyncDetectorState>()
 
   minecraftStore.initialize()
@@ -92,21 +100,21 @@ export function useModulesList() {
       category: 'essential',
     },
     {
-      id: 'memory-short-term',
-      name: t('settings.pages.modules.memory-short-term.title'),
-      description: t('settings.pages.modules.memory-short-term.description'),
-      icon: 'i-solar:bookmark-bold-duotone',
-      to: '/settings/modules/memory-short-term',
-      configured: false,
+      id: 'desktop-control',
+      name: t('settings.pages.modules.desktop-control.title'),
+      description: t('settings.pages.modules.desktop-control.description'),
+      icon: 'i-solar:cursor-bold-duotone',
+      to: '/settings/modules/desktop-control',
+      configured: desktopControlStore.configured,
       category: 'essential',
     },
     {
-      id: 'memory-long-term',
-      name: t('settings.pages.modules.memory-long-term.title'),
-      description: t('settings.pages.modules.memory-long-term.description'),
+      id: 'memory',
+      name: t('settings.pages.modules.memory.title'),
+      description: t('settings.pages.modules.memory.description'),
       icon: 'i-solar:book-bookmark-bold-duotone',
-      to: '/settings/modules/memory-long-term',
-      configured: false,
+      to: '/settings/modules/memory',
+      configured: memoryStore.configured,
       category: 'essential',
     },
     {
@@ -116,6 +124,15 @@ export function useModulesList() {
       icon: 'i-simple-icons:discord',
       to: '/settings/modules/messaging-discord',
       configured: discordStore.configured,
+      category: 'messaging',
+    },
+    {
+      id: 'messaging-qq',
+      name: t('settings.pages.modules.messaging-qq.title'),
+      description: t('settings.pages.modules.messaging-qq.description'),
+      icon: 'i-simple-icons:tencentqq',
+      to: '/settings/modules/messaging-qq',
+      configured: qqStore.configured,
       category: 'messaging',
     },
     {
@@ -143,6 +160,15 @@ export function useModulesList() {
       iconImage: factorioIcon,
       to: '/settings/modules/gaming-factorio',
       configured: factorioStore.configured,
+      category: 'gaming',
+    },
+    {
+      id: 'gaming-chess',
+      name: t('settings.pages.modules.gaming-chess.title'),
+      description: t('settings.pages.modules.gaming-chess.description'),
+      icon: 'i-simple-icons:lichess',
+      to: '/settings/modules/gaming-chess',
+      configured: chessStore.configured,
       category: 'gaming',
     },
     {

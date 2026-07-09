@@ -5,14 +5,15 @@ import { resolveLinkedAccountOAuthErrorMessageKey, useLinkedAccounts } from '@pr
 import { authClient } from '@proj-airi/stage-ui/libs/auth'
 import { SERVER_URL } from '@proj-airi/stage-ui/libs/server'
 import { useAuthStore } from '@proj-airi/stage-ui/stores/auth'
-import { Button, FieldInput } from '@proj-airi/ui'
+import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
+import { Button, FieldCheckbox, FieldInput } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { DialogClose, DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-type SectionId = 'profile' | 'security' | 'connections' | 'danger'
+type SectionId = 'profile' | 'security' | 'connections' | 'sync' | 'danger'
 
 const emit = defineEmits<{
   login: []
@@ -24,6 +25,10 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const { isAuthenticated, user, credits } = storeToRefs(authStore)
+
+// Chat cloud-sync preference lives on the session store (it owns the WS +
+// reconcile lifecycle the toggle controls); this page only surfaces it.
+const { cloudSyncEnabled } = storeToRefs(useChatSessionStore())
 
 const userName = computed(() => user.value?.name ?? '')
 const userEmail = computed(() => user.value?.email ?? null)
@@ -109,6 +114,7 @@ const activeSection = ref<SectionId>('profile')
 const profileSectionRef = ref<HTMLElement | null>(null)
 const securitySectionRef = ref<HTMLElement | null>(null)
 const connectionsSectionRef = ref<HTMLElement | null>(null)
+const syncSectionRef = ref<HTMLElement | null>(null)
 const dangerSectionRef = ref<HTMLElement | null>(null)
 const linkedAccountsRouteErrorKey = shallowRef<string | null>(null)
 
@@ -122,6 +128,7 @@ function scrollToSection(id: SectionId) {
     profile: profileSectionRef.value,
     security: securitySectionRef.value,
     connections: connectionsSectionRef.value,
+    sync: syncSectionRef.value,
     danger: dangerSectionRef.value,
   }
   targets[id]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -415,7 +422,7 @@ async function handleConfirmDelete(event: Event) {
              section like Profile / Security / Danger. -->
         <aside :class="['hidden md:flex flex-col gap-1 md:sticky md:top-2']">
           <button
-            v-for="section in ['profile', 'security', 'connections', 'danger'] as SectionId[]"
+            v-for="section in ['profile', 'security', 'connections', 'sync', 'danger'] as SectionId[]"
             :key="section"
             type="button"
             :class="[
@@ -780,6 +787,33 @@ async function handleConfirmDelete(event: Event) {
               aria-live="polite"
             >
               {{ linkedAccountsMessage }}
+            </div>
+          </section>
+
+          <!-- Sync preferences. Sits between Connections and Danger: it's a
+               reversible per-device preference, not identity and not
+               destructive. The toggle itself lives on the chat session store
+               (which owns the WS/reconcile lifecycle); this section only
+               surfaces it. -->
+          <section
+            ref="syncSectionRef"
+            :class="['flex flex-col gap-4 py-8 border-b border-neutral-200/70 dark:border-neutral-800/60']"
+          >
+            <header :class="['flex flex-col gap-1']">
+              <h3 :class="['text-lg font-semibold']">
+                {{ t('settings.pages.account.sync.title') }}
+              </h3>
+              <p :class="['text-sm text-neutral-500 dark:text-neutral-400']">
+                {{ t('settings.pages.account.sync.description') }}
+              </p>
+            </header>
+
+            <div :class="['max-w-md']">
+              <FieldCheckbox
+                v-model="cloudSyncEnabled"
+                :label="t('settings.pages.account.sync.chatSync.label')"
+                :description="t('settings.pages.account.sync.chatSync.description')"
+              />
             </div>
           </section>
 

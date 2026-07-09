@@ -1,3 +1,6 @@
+import type { Card } from '@proj-airi/ccc'
+
+import type { MemoryExport } from '../stores/chat/memory/repository'
 import type { ChatHistoryItem } from './chat'
 
 export interface ChatSessionMeta {
@@ -38,8 +41,29 @@ export interface ChatSessionsIndex {
   characters: Record<string, ChatCharacterSessionsIndex>
 }
 
+/**
+ * The chat backup file format.
+ *
+ * `cards`, `activeCardId`, and `memory` are optional sections: files written
+ * before they existed (or hand-trimmed ones) still import — the importer
+ * simply restores whatever sections are present.
+ */
 export interface ChatSessionsExport {
   format: 'chat-sessions-index:v1'
   index: ChatSessionsIndex
   sessions: Record<string, ChatSessionRecord>
+  /**
+   * Character cards keyed by the exporting install's card id — the same ids
+   * `ChatSessionMeta.characterId` references, so importing the cards first
+   * lets sessions keep their card linkage instead of being re-homed.
+   */
+  cards?: Record<string, Card>
+  /**
+   * The exporter's active card. After import the app switches to it (when it
+   * exists locally) so the imported conversation surfaces without digging
+   * through the card picker.
+   */
+  activeCardId?: string
+  /** Consolidated memories + archived summaries + undo backups. */
+  memory?: MemoryExport
 }

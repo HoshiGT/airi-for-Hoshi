@@ -658,12 +658,6 @@ pages:
               Note: If your provider does not support verbose_json responses, this setting will have no effect.
             verbose-json-unsupported: >-
               Your provider did not return verbose_json segments. Confidence filtering had no effect on the last transcription.
-    memory-long-term:
-      description: Cài đặt và quản lý trí nhớ dài hạn
-      title: Trí nhớ dài hạn
-    memory-short-term:
-      description: Cài đặt và quản lý trí nhớ ngắn hạn
-      title: Trí nhớ ngắn hạn
     messaging-discord:
       description: Trò chuyện & gọi thoại qua Discord
       title: Discord

@@ -1,0 +1,31 @@
+{
+  "name": "@proj-airi/game-engine",
+  "type": "module",
+  "private": true,
+  "description": "UCI board-game engine service for AIRI (Stockfish chess / Pikafish xiangqi)",
+  "author": {
+    "name": "Moeru AI Project AIRI Team",
+    "email": "airi@moeru.ai",
+    "url": "https://github.com/moeru-ai"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local src/index.ts",
+    "dev": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local --watch src/index.ts",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@guiiai/logg": "catalog:",
+    "@moeru/std": "catalog:",
+    "@proj-airi/plugin-protocol": "workspace:^",
+    "@proj-airi/server-sdk": "workspace:^",
+    "@proj-airi/server-shared": "workspace:^",
+    "tsx": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:vitest"
+  }
+}

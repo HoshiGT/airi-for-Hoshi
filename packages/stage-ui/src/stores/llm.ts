@@ -82,9 +82,17 @@ export const useLLM = defineStore('llm', () => {
       await runStream()
     }
     catch (err) {
-      if (isToolRelatedError(err)) {
-        console.warn(`[llm] Auto-disabling tools for "${key}" due to tool-related error`)
+      // NOTICE:
+      // Retry once without tools when the provider's streaming format drops tool
+      // call names (e.g. AIHubMix proxy with Claude) or the model calls a tool
+      // that isn't registered. Both cases produce InvalidToolCallError from xsai
+      // and indicate the model+provider pairing can't reliably use tool calling.
+      // Subsequent calls skip tools entirely via the cached toolsCompatibility entry.
+      if (isToolRelatedError(err) && toolsCompatibility.value.get(key) !== false) {
+        console.warn(`[llm] Auto-disabling tools for "${key}" and retrying once`)
         toolsCompatibility.value.set(key, false)
+        await runStream()
+        return
       }
       // NOTICE:
       // Auto-degrade content-part arrays to plain strings on the next attempt

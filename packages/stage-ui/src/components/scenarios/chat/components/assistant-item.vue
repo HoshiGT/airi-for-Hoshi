@@ -9,17 +9,19 @@ import ChatResponsePart from './response-part.vue'
 import ChatToolCallBlock from './tool-call-block.vue'
 
 import { MarkdownRenderer } from '../../../markdown'
-import { getChatHistoryItemCopyText } from '../utils'
+import { formatChatTimestamp, getChatHistoryItemCopyText } from '../utils'
 import { ChatActionMenu } from './action-menu'
 import { createToolCallResultLookup, resolveToolCallBlockState } from './tool-call-results'
 
 const props = withDefaults(defineProps<{
-  message: ChatAssistantMessage
+  message: ChatAssistantMessage & { createdAt?: number }
   label: string
+  yesterdayLabel?: string
   showPlaceholder?: boolean
   variant?: 'desktop' | 'mobile'
   toolCallRenderers?: ChatToolCallRendererRegistry
 }>(), {
+  yesterdayLabel: 'Yesterday',
   showPlaceholder: false,
   variant: 'desktop',
   toolCallRenderers: () => ({}),
@@ -78,6 +80,7 @@ const boxClasses = computed(() => [
   props.variant === 'mobile' ? 'px-2 py-2 text-sm bg-primary-50/90 dark:bg-primary-950/90' : 'px-3 py-3 bg-primary-50/80 dark:bg-primary-950/80',
 ])
 const copyText = computed(() => getChatHistoryItemCopyText(props.message as ChatHistoryItem))
+const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { yesterday: props.yesterdayLabel }))
 </script>
 
 <template>
@@ -103,8 +106,9 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
             :message="message"
             :variant="variant"
           />
-          <div class="<sm:hidden">
+          <div class="<sm:hidden" :class="['flex items-baseline gap-1.5']">
             <span text-sm text="black/60 dark:white/65" font-normal>{{ label }}</span>
+            <span v-if="timeText" text-xs text="black/35 dark:white/40" font-normal>{{ timeText }}</span>
           </div>
           <div v-if="resolvedSlices.length > 0" class="flex flex-col gap-2 break-words" text="primary-700 dark:primary-100">
             <template v-for="(slice, sliceIndex) in resolvedSlices" :key="sliceIndex">

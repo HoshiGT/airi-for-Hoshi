@@ -2,6 +2,7 @@ chat:
   actions:
     retry: 重试
   message:
+    yesterday: 昨天
     character-name:
       airi: AIRI
       core-system: 核心系统

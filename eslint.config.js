@@ -15,6 +15,8 @@ export default defineConfig({
     'cspell.config.yml',
     'crowdin.yaml',
     'crowdin.yml',
+    // Prebuilt WASM engine artifacts copied into the chess plugin at build time.
+    '**/public/engines/**',
     '**/assets/js/**',
     '**/assets/live2d/models/**',
     'apps/stage-tamagotchi/out/**',

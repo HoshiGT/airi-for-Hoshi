@@ -162,6 +162,24 @@ function resolveCapturedToolErrorEvent(
   }
 }
 
+// NOTICE:
+// xsAI exposes `steps`/`messages`/`usage`/`totalUsage` as separate side
+// promises. When a stream faults they all reject with the same underlying
+// error, so logging each at `error` level prints the same failure four times.
+//
+// For degradeable faults (tool-calling or content-array unsupported) the chat
+// store auto-retries the turn with that capability disabled and the user still
+// gets a reply, so those four lines are expected noise on the first attempt.
+//
+// Downgrade degradeable faults to `debug` and keep genuine stream faults at
+// `error`. This only changes log level; the rejection still propagates via
+// `rejectOnce` so the caller's retry logic is unaffected.
+function logStreamSideError(label: string, error: unknown): void {
+  const willAutoRetry = isToolRelatedError(error) || isContentArrayRelatedError(error)
+  const log = willAutoRetry ? console.debug : console.error
+  log(label, error)
+}
+
 export async function streamFrom({
   model,
   chatProvider,
@@ -251,11 +269,11 @@ export async function streamFrom({
       // of the stream lifecycle instead of an intermediate tool boundary.
       void streamResult.steps.then(resolveOnce).catch((error) => {
         rejectOnce(error)
-        console.error('Stream steps error:', error)
+        logStreamSideError('Stream steps error:', error)
       })
-      void streamResult.messages.catch(error => console.error('Stream messages error:', error))
-      void streamResult.usage.catch(error => console.error('Stream usage error:', error))
-      void streamResult.totalUsage.catch(error => console.error('Stream totalUsage error:', error))
+      void streamResult.messages.catch(error => logStreamSideError('Stream messages error:', error))
+      void streamResult.usage.catch(error => logStreamSideError('Stream usage error:', error))
+      void streamResult.totalUsage.catch(error => logStreamSideError('Stream totalUsage error:', error))
     }
     catch (error) {
       rejectOnce(error)
@@ -275,6 +293,14 @@ const TOOLS_RELATED_ERROR_PATTERNS: RegExp[] = [
   /tool_use_failed/i, // Groq
   /does not support function.?calling/i, // Anthropic
   /tools?\s+(is|are)\s+not\s+supported/i, // Cloudflare Workers AI
+  // NOTICE:
+  // Some OpenAI-compatible proxies (e.g. AIHubMix) drop `function.name` from streaming
+  // tool call chunks when forwarding Claude responses. xsai's executeTool then throws
+  // InvalidToolCallError("Missing toolCall.function.name"). Since the root cause is
+  // the proxy's broken streaming format rather than a stable API contract, treat it
+  // the same as "tools not supported" so the model degrades to plain-text responses.
+  /missing toolcall\.function\.name/i,
+  /model tried to call unavailable tool/i, // xsai: model hallucinated a tool name not in the registered list
 ]
 
 export function isToolRelatedError(error: unknown): boolean {
