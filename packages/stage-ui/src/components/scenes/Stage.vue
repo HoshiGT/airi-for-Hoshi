@@ -6,8 +6,6 @@ import type { UnElevenLabsOptions } from 'unspeech'
 
 import type { EmotionPayload } from '../../constants/emotions'
 import type { SpeechTransport, StageTtsSession, StreamingSessionSnapshot } from '../../libs/speech/tts-session'
-import type { VoicePackSnapshot } from '../../stores/modules/airi-card'
-import type { VoiceInfo } from '../../stores/providers'
 
 import { sleep } from '@moeru/std'
 import { createLive2DLipSync } from '@proj-airi/model-driver-lipsync'
@@ -28,6 +26,7 @@ import { storeToRefs } from 'pinia'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { useSettingsLive2d } from '../../../../stage-ui-live2d/src/composables/live2d/live2d'
+import { useAnalytics } from '../../composables/use-analytics'
 import { useAuthProviderSync } from '../../composables/use-auth-provider-sync'
 import { useDuckDb } from '../../composables/use-duck-db'
 import { useIOTraceBridge } from '../../composables/use-io-trace-bridge'
@@ -35,14 +34,15 @@ import { initIOTracer } from '../../composables/use-io-tracer'
 import { useSpeechPipelineAnalytics } from '../../composables/use-speech-pipeline-analytics'
 import { Emotion, EMOTION_EmotionMotionName_value, EMOTION_VRMExpressionName_value, EmotionThinkMotionName } from '../../constants/emotions'
 import { getDefaultStreamingModel, getDefinedProvider } from '../../libs/providers/providers'
-import { OFFICIAL_SPEECH_PROVIDER_ID } from '../../libs/providers/providers/official'
+import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID } from '../../libs/providers/providers/official'
+import { bindSpeakingStateToPlaybackManager } from '../../libs/speech/playback-speaking-state'
 import { createStageTtsSession } from '../../libs/speech/tts-session'
 import { useAudioContext, useSpeakingStore } from '../../stores/audio'
 import { useBackgroundStore } from '../../stores/background'
 import { useChatOrchestratorStore } from '../../stores/chat'
 import { useLlmStreamingControlStore } from '../../stores/llm-streaming-control'
 import { useAiriCardStore } from '../../stores/modules'
-import { useSpeechStore, voicePackForSpeechProvider } from '../../stores/modules/speech'
+import { useSpeechStore } from '../../stores/modules/speech'
 import { useProvidersStore } from '../../stores/providers'
 import { useSettings } from '../../stores/settings'
 import { useSpeechOutputControlStore } from '../../stores/speech-output-control'
@@ -156,6 +156,8 @@ const speechStore = useSpeechStore()
 const { ssmlEnabled, activeSpeechProvider, activeSpeechModel, activeSpeechVoice, pitch } = storeToRefs(speechStore)
 const activeCardId = computed(() => activeCard.value?.name ?? 'default')
 const speechRuntimeStore = useSpeechRuntimeStore()
+const { trackOfficialTtsAutoEnabled } = useAnalytics()
+let officialAutoTtsTrackedForTurn = false
 const backgroundStore = useBackgroundStore()
 const { activeBackgroundUrl } = storeToRefs(backgroundStore)
 
@@ -316,6 +318,11 @@ async function playFunction(item: Parameters<Parameters<typeof createPlaybackMan
 
     try {
       source.start(0)
+      if (item.intentId.startsWith('stream-')) {
+        const model = resolveStreamingSessionModel()
+        if (model)
+          trackOfficialAutoTtsForTurn(model)
+      }
     }
     catch {
       stopPlayback()
@@ -331,16 +338,29 @@ const playbackManager = createPlaybackManager<AudioBuffer>({
   ownerOverflowPolicy: 'steal-oldest',
 })
 
-function createVoicePackVoice(voicePack: VoicePackSnapshot): VoiceInfo {
-  return {
-    id: voicePack.voiceId,
-    name: voicePack.name,
-    description: voicePack.name,
-    previewURL: '',
-    languages: [{ code: 'en', title: 'English' }],
-    provider: activeSpeechProvider.value,
-    gender: 'neutral',
-  }
+/**
+ * Classifies chat auto-TTS voice usage before forwarding analytics to the server.
+ */
+function resolveStageVoiceType(): 'official_selected' | 'custom_configured' {
+  return activeSpeechProvider.value === OFFICIAL_SPEECH_PROVIDER_ID || activeSpeechProvider.value === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID ? 'official_selected' : 'custom_configured'
+}
+
+/**
+ * Tracks official auto-TTS once per assistant turn when chat audio is actually used.
+ */
+function trackOfficialAutoTtsForTurn(modelId: string) {
+  if (officialAutoTtsTrackedForTurn)
+    return
+  if (activeSpeechProvider.value !== OFFICIAL_SPEECH_PROVIDER_ID && activeSpeechProvider.value !== OFFICIAL_SPEECH_STREAMING_PROVIDER_ID)
+    return
+
+  officialAutoTtsTrackedForTurn = true
+  trackOfficialTtsAutoEnabled({
+    tts_provider_id: activeSpeechProvider.value,
+    tts_model_id: modelId,
+    source: 'chat_auto_tts',
+    enabled: true,
+  })
 }
 
 const speechPipeline = createSpeechPipeline<AudioBuffer>({
@@ -424,29 +444,19 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
       }
     }
 
-    const voicePack = voicePackForSpeechProvider(activeSpeechProvider.value, activeCard.value?.extensions.airi.modules.speech.voicePack)
-    if (voicePack) {
-      model = voicePack.ttsModelId
-      if (!voice || voice.id !== voicePack.voiceId)
-        voice = createVoicePackVoice(voicePack)
-    }
-
     if (!model || !voice)
       return null
 
     try {
-      const speechRequest = speechStore.resolveVoicePackSpeechInput({
+      const speechRequest = speechStore.resolveSpeechInput({
         text: request.text,
         voice,
         providerConfig: {
           ...providerConfig,
           pitch: ssmlEnabled.value ? pitch.value : undefined,
         },
-        params: voicePack?.params,
-        voicePack,
         forceSSML: ssmlEnabled.value,
         supportsSSML: speechStore.supportsSSML,
-        supportsAdapterProsody: activeSpeechProvider.value === OFFICIAL_SPEECH_PROVIDER_ID,
       })
 
       // Non-streaming providers only: synth via REST. Streaming provider
@@ -460,6 +470,7 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
               airi_analytics: {
                 trigger: 'auto',
                 source: 'chat_auto_tts',
+                voice_type: resolveStageVoiceType(),
               },
             },
           }
@@ -474,6 +485,7 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
         return null
 
       const audioBuffer = await audioContext.decodeAudioData(res)
+      trackOfficialAutoTtsForTurn(model)
       return audioBuffer
     }
     catch (err) {
@@ -519,29 +531,36 @@ speechPipeline.on('onTurnCancel', ({ turnId }) => {
   streamingControl.cancelTurn(turnId)
 })
 
-playbackManager.onEnd(() => {
+function resetSpeakingState() {
   nowSpeaking.value = false
   mouthOpenSize.value = 0
-})
+}
 
-playbackManager.onStart(({ item }) => {
-  nowSpeaking.value = true
-  // NOTICE: postCaption and postPresent may throw errors if the BroadcastChannel is closed
-  // (e.g., when navigating away from the page). We wrap these in try-catch to prevent
-  // breaking playback when the channel is unavailable.
-  assistantCaption.value += ` ${item.text}`
-  try {
-    postCaption({ type: 'caption-assistant', text: item.text })
-  }
-  catch {
-    // BroadcastChannel may be closed - don't break playback
-  }
-  try {
-    postPresent({ type: 'assistant-append', text: item.text })
-  }
-  catch {
-    // BroadcastChannel may be closed - don't break playback
-  }
+bindSpeakingStateToPlaybackManager(playbackManager, {
+  setSpeaking: (speaking) => {
+    if (!speaking)
+      resetSpeakingState()
+    else
+      nowSpeaking.value = true
+  },
+  onStart: ({ item }) => {
+    // NOTICE: postCaption and postPresent may throw errors if the BroadcastChannel is closed
+    // (e.g., when navigating away from the page). We wrap these in try-catch to prevent
+    // breaking playback when the channel is unavailable.
+    assistantCaption.value += ` ${item.text}`
+    try {
+      postCaption({ type: 'caption-assistant', text: item.text })
+    }
+    catch {
+      // BroadcastChannel may be closed - don't break playback
+    }
+    try {
+      postPresent({ type: 'assistant-append', text: item.text })
+    }
+    catch {
+      // BroadcastChannel may be closed - don't break playback
+    }
+  },
 })
 
 function startLipSyncLoop() {
@@ -639,6 +658,17 @@ function stopSpeechOutput(reason: string) {
   resetAssistantSpeechSurface(reason)
 }
 
+/**
+ * Resolves the official streaming TTS model for the current Stage session.
+ */
+function resolveStreamingSessionModel(): string | null {
+  const activeModel = activeSpeechModel.value as string | undefined
+  const sessionModel = activeModel?.includes('/') ? activeModel : getDefaultStreamingModel()
+  if (!sessionModel?.includes('/'))
+    return null
+  return sessionModel
+}
+
 function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
   // Snapshotted once per session, so a mid-session provider/voice swap
   // does not corrupt an in-flight session — the watcher below detects
@@ -655,9 +685,8 @@ function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
   // a provider switch) must NOT reach the bridge, so fall back to the
   // server-curated default instead of a hardcoded id. Returns null (segmenter
   // fallback) when neither resolves, rather than guessing a resource id.
-  const activeModel = activeSpeechModel.value as string | undefined
-  const sessionModel = activeModel?.includes('/') ? activeModel : getDefaultStreamingModel()
-  if (!sessionModel?.includes('/'))
+  const sessionModel = resolveStreamingSessionModel()
+  if (!sessionModel)
     return null
   const apiResourceId = sessionModel.split('/', 2)[1]
   // TTS 2.0 / ICL 2.0 ship subtitles asynchronously relative to audio
@@ -667,6 +696,7 @@ function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
   return {
     model: sessionModel,
     voice: voiceId,
+    voiceType: resolveStageVoiceType(),
     bufferEntireSession,
     extraBody: {
       api_resource_id: apiResourceId,
@@ -734,6 +764,7 @@ watch(latestStopRequest, (request) => {
 })
 
 chatHookCleanups.push(onBeforeMessageComposed(async () => {
+  officialAutoTtsTrackedForTurn = false
   playbackManager.stopAll('new-message')
 
   setupAnalyser()

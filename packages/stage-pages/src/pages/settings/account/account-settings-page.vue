@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { errorMessageFrom } from '@moeru/std'
 import { defaultSignInProviders } from '@proj-airi/stage-ui/components/auth'
-import { resolveLinkedAccountOAuthErrorMessageKey, useLinkedAccounts } from '@proj-airi/stage-ui/composables'
+import { resolveLinkedAccountOAuthErrorMessageKey, useAnalytics, useLinkedAccounts } from '@proj-airi/stage-ui/composables'
 import { authClient } from '@proj-airi/stage-ui/libs/auth'
 import { SERVER_URL } from '@proj-airi/stage-ui/libs/server'
 import { useAuthStore } from '@proj-airi/stage-ui/stores/auth'
@@ -23,6 +23,13 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const {
+  trackAccountDeletionRequested,
+  trackOauthProviderLinkStarted,
+  trackOauthProviderUnlinked,
+  trackPasswordChanged,
+  trackPasswordResetRequested,
+} = useAnalytics()
 const authStore = useAuthStore()
 const { isAuthenticated, user, credits } = storeToRefs(authStore)
 
@@ -164,6 +171,8 @@ const {
     unlinked: provider => t('settings.pages.account.connections.message.unlinked', { provider }),
     linkStarted: provider => t('settings.pages.account.connections.message.linkStarted', { provider }),
   },
+  onUnlinked: providerId => trackOauthProviderUnlinked({ provider: providerId }),
+  onLinkStarted: providerId => trackOauthProviderLinkStarted({ provider: providerId }),
 })
 
 watch(
@@ -286,6 +295,7 @@ async function handleChangePassword(event: Event) {
     passwordForm.next = ''
     passwordForm.confirm = ''
     passwordSuccess.value = t('settings.pages.account.security.message.changed')
+    trackPasswordChanged()
   }
   catch (error) {
     passwordError.value = errorMessageFrom(error) ?? t('settings.pages.account.security.error.fallback')
@@ -323,6 +333,7 @@ async function handleSendSetPasswordLink() {
     if (error)
       throw new Error(error.message ?? 'requestPasswordReset failed')
     setPasswordSuccess.value = t('settings.pages.account.security.message.setLinkSent', { email })
+    trackPasswordResetRequested()
   }
   catch (error) {
     setPasswordError.value = errorMessageFrom(error) ?? t('settings.pages.account.security.error.setLinkFailed')
@@ -397,6 +408,7 @@ async function handleConfirmDelete(event: Event) {
 
     deleteSent.value = true
     deleteDialogOpen.value = false
+    trackAccountDeletionRequested()
   }
   catch (error) {
     deleteError.value = errorMessageFrom(error) ?? t('settings.pages.account.danger.deleteAccount.error.fallback')

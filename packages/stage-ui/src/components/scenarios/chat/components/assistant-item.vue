@@ -30,6 +30,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'delete'): void
+  (e: 'toolCallRerun', payload: { toolCallId: string, toolName: string, args: string }): void
 }>()
 
 const resolvedSlices = computed<ChatSlices[]>(() => {
@@ -115,10 +116,12 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
               <component
                 :is="getToolCallRenderer(slice)"
                 v-if="slice.type === 'tool-call'"
+                :tool-call-id="slice.toolCall.toolCallId"
                 :tool-name="slice.toolCall.toolName"
                 :args="slice.toolCall.args"
                 :state="getToolCallState(slice)"
                 :result="getToolCallResult(slice)?.result"
+                @tool-call-rerun="emit('toolCallRerun', $event)"
               />
               <template v-else-if="slice.type === 'tool-call-result'" />
               <template v-else-if="slice.type === 'text'">
