@@ -770,6 +770,9 @@ pages:
       napcat-token-description: NapCat access_token, leave empty if not set
       napcat-token-placeholder: Leave empty for no authentication
       configured: QQ is properly configured!
+      restart-ws: Restart WS Server
+      restart-ws-description: If the NapCat connection misbehaves (messages stop flowing, connection stuck), ask qq-bot to restart its reverse WS server; NapCat reconnects automatically
+      restart-ws-sent: Restart command sent. If the qq-bot service is not running, this has no effect — start the service manually.
     speech:
       description: Speech synthesis
       sections:

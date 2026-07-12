@@ -53,6 +53,8 @@ export class QQAdapter {
   /** 当前 NapCat 连接（反向 WS 模式下 NapCat 是客户端） */
   private napCatConn: WebSocket | null = null
   private echoCounter = 0
+  /** 进行中的 WS 重启；并发触发时后到者等待同一次重启完成，不叠加执行 */
+  private restartTask: Promise<void> | null = null
   private readonly config: Required<QQAdapterConfig>
 
   constructor(config: QQAdapterConfig) {
@@ -80,6 +82,18 @@ export class QQAdapter {
   }
 
   private setupAiriHandlers(): void {
+    // 设置页（模块→QQ）的「重启 WS 服务器」按钮：UI 发 `ui:configure`，
+    // server-runtime 按本进程 announce 的模块名（proj-airi:qq-bot）路由成
+    // `module:configure` 直发过来。config 用 command 字段区分一次性指令
+    // 与真正的配置推送（目前只有 restart-ws-server 一个指令）。
+    this.airiClient.onEvent('module:configure', async (event) => {
+      const config = (event.data as { config?: Record<string, unknown> }).config
+      if (config?.command === 'restart-ws-server') {
+        log.log('Restart WS server command received from stage settings')
+        await this.restartWsServer()
+      }
+    })
+
     this.airiClient.onEvent('output:gen-ai:chat:message', async (event) => {
       try {
         const message = (event.data as { message?: { content?: string } }).message
@@ -132,11 +146,52 @@ export class QQAdapter {
     }))
   }
 
+  /**
+   * 重启反向 WS 服务器（关掉旧 server + 踢掉 NapCat 连接后重新 listen）。
+   * NapCat 侧配置了反向 WS 自动重连，会在几秒内连回来。
+   */
+  async restartWsServer(): Promise<void> {
+    if (this.restartTask)
+      return this.restartTask
+
+    this.restartTask = (async () => {
+      log.log('Restarting reverse WS server...')
+      await this.stopWsServer()
+      this.startWsServer()
+    })().finally(() => {
+      this.restartTask = null
+    })
+    return this.restartTask
+  }
+
+  private async stopWsServer(): Promise<void> {
+    const wss = this.wss
+    this.wss = null
+    this.napCatConn = null
+    if (!wss)
+      return
+
+    // terminate 而不是优雅 close：重启就是给「连接看着在、实际卡死」的场景
+    // 兜底用的，优雅关闭握手在那种状态下可能永远收不到回应。
+    for (const client of wss.clients)
+      client.terminate()
+
+    // close 回调返回后端口才真正释放，之后重新 listen 才不会 EADDRINUSE
+    await new Promise<void>(resolve => wss.close(() => resolve()))
+    log.log('Reverse WS server stopped')
+  }
+
   private startWsServer(): void {
     this.wss = new WebSocketServer({ port: this.config.wsPort })
 
     this.wss.on('listening', () => {
       log.withFields({ port: this.config.wsPort }).log('Reverse WS server listening, waiting for NapCat...')
+    })
+
+    // 不挂 error 监听的话，listen 失败（如端口被占）会以 uncaught exception
+    // 直接带崩整个进程；重启场景里旧端口未释放时尤其容易踩到。
+    this.wss.on('error', (err) => {
+      log.withError(err).error('Reverse WS server error')
     })
 
     this.wss.on('connection', (ws, req) => {
@@ -252,8 +307,7 @@ export class QQAdapter {
 
   async stop(): Promise<void> {
     log.log('Stopping QQ adapter...')
-    this.napCatConn?.close()
-    this.wss?.close()
+    await this.stopWsServer()
     this.airiClient.close()
   }
 }

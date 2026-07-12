@@ -737,6 +737,9 @@ pages:
       napcat-token-description: NapCat 的 access_token，未设置可留空
       napcat-token-placeholder: 留空表示无需验证
       configured: QQ 已正确配置！
+      restart-ws: 重启 WS 服务器
+      restart-ws-description: NapCat 连接异常（消息不通、连接卡死）时，可让 qq-bot 重启它的反向 WS 服务器，NapCat 会自动重连
+      restart-ws-sent: 重启指令已发送。若 qq-bot 服务未运行，此指令无效，请手动启动服务。
     speech:
       description: 语音合成
       sections:

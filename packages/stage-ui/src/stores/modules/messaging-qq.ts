@@ -20,6 +20,17 @@ export const useQQStore = defineStore('qq', () => {
 
   const configured = computed(() => !!botUin.value.trim())
 
+  /**
+   * 让 qq-bot 进程重启它的反向 WS 服务器（NapCat 连接卡死时的兜底）。
+   *
+   * 模块名必须是 qq-bot 进程 announce 的 name（`proj-airi:qq-bot`），
+   * server-runtime 按它把 `ui:configure` 路由成 `module:configure` 直发
+   * 该进程；qq-bot 未运行时 server 会回 module-not-found，指令静默丢弃。
+   */
+  function restartWsServer() {
+    configurator.updateFor('proj-airi:qq-bot', { command: 'restart-ws-server' })
+  }
+
   function resetState() {
     enabled.reset()
     botUin.reset()
@@ -33,6 +44,7 @@ export const useQQStore = defineStore('qq', () => {
     napCatToken,
     configured,
     saveSettings,
+    restartWsServer,
     resetState,
   }
 })
