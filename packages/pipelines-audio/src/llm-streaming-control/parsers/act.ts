@@ -1,7 +1,12 @@
 import type { LlmStreamingControlParser, LlmStreamingControlTokenAct } from '../types'
 
-const actTokenPrefix = '<|ACT '
-const markerSuffix = '|>'
+// NOTICE:
+// The canonical form is `<|ACT {...}|>`, but weaker models frequently emit
+// `<|ACT: {...}|>` / `<|ACT:{...}|>`. We tolerate the colon variant as long
+// as the payload is still a JSON object literal, matching the leniency of the
+// emotion queue regex in `packages/stage-ui/src/composables/queues.ts`.
+// Removal condition: all supported models reliably emit the canonical form.
+const actTokenPattern = /^<\|ACT\s*(?::\s*)?(\{[\s\S]*\})\s*\|>$/
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -23,12 +28,10 @@ export function tokenAct(): LlmStreamingControlParser<LlmStreamingControlTokenAc
   return {
     name: 'ACT',
     match(special) {
-      const trimmed = special.trim()
-      return trimmed.startsWith(actTokenPrefix) && trimmed.endsWith(markerSuffix)
+      return actTokenPattern.test(special.trim())
     },
     parse(special) {
-      const trimmed = special.trim()
-      const rawPayload = trimmed.slice(actTokenPrefix.length, -markerSuffix.length).trim()
+      const rawPayload = actTokenPattern.exec(special.trim())?.[1] ?? ''
 
       let parsed: unknown
       try {

@@ -210,6 +210,33 @@ describe('createStreamingControlParser', () => {
 
   /**
    * @example
+   * await control.dispatchWith('<|ACT: {"emotion":"happy"}|>')
+   * // -> true, weaker models often add a colon after ACT
+   */
+  it('tolerates a colon after ACT when the payload is a JSON object', async () => {
+    const control = createStreamingControlParser()
+    const handler = vi.fn()
+    const dispose = control.onSignal(handler)
+
+    await expect(control.dispatchWith('<|ACT: {"emotion":"happy"}|>')).resolves.toBe(true)
+    await expect(control.dispatchWith('<|ACT:{"emotion":"curious"}|>')).resolves.toBe(true)
+
+    expect(handler).toHaveBeenNthCalledWith(
+      1,
+      { type: 'act', payload: { emotion: 'happy' } },
+      expect.objectContaining({ createdAt: expect.any(Number) }),
+    )
+    expect(handler).toHaveBeenNthCalledWith(
+      2,
+      { type: 'act', payload: { emotion: 'curious' } },
+      expect.objectContaining({ createdAt: expect.any(Number) }),
+    )
+
+    dispose()
+  })
+
+  /**
+   * @example
    * control.onSignal(handler)
    * await control.dispatchWith('<|DELAY 1.5|>')
    * expect(handler).toHaveBeenCalledWith(expect.objectContaining({ type: 'delay' }))

@@ -234,6 +234,45 @@ describe('createChatOrchestratorRuntime', () => {
     expect(harness.promptProjections).toHaveLength(1)
   })
 
+  // ROOT CAUSE:
+  //
+  // Weak models recite the system-prompt instruction "Start every reply with
+  // an ACT token" as literal text (`ACT token: \n...`). The marker parser now
+  // swallows that recital at the stream head, but this runtime is the surface
+  // remote consumers see: `emitAssistantMessageHooks` carries the assistant
+  // message that the context bridge broadcasts as `output:gen-ai:chat:message`
+  // to the QQ and Discord adapters, which send `message.content` verbatim.
+  //
+  // This test pins that outbound content: no recital words and no `<|...|>`
+  // markers may survive into the broadcast message.
+  it('keeps recited ACT prefixes out of the broadcast assistant message', async () => {
+    const harness = createHarness()
+    const broadcastContents: string[] = []
+
+    harness.runtime.hooks.onAssistantMessage(async (message) => {
+      broadcastContents.push(typeof message.content === 'string' ? message.content : '')
+    })
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'ACT tok' })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: 'en: \n' })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '<|ACT {"emotion":"happy"}|>' })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '你好呀，今天过得怎么样？' })
+      await options?.onStreamEvent?.({ type: 'finish', finishReason: 'stop' })
+    })
+
+    await harness.runtime.ingest('(From QQ user Hoshi): 在吗', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    expect(broadcastContents).toHaveLength(1)
+    expect(broadcastContents[0]).toBe('你好呀，今天过得怎么样？')
+    expect(harness.sessionMessages['session-1'].at(-1)).toMatchObject({
+      role: 'assistant',
+      content: '你好呀，今天过得怎么样？',
+    })
+  })
+
   /**
    * @example
    * deps.getSystemPromptSupplement() returns tool guidance.
