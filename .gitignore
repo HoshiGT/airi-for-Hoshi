@@ -39,6 +39,9 @@ lerna-debug.log*
 # Credentials
 # Unlike the tracked template .env files elsewhere, this one holds a real NAPCAT_TOKEN.
 services/qq-bot/.env
+
+# Local-only legacy NoneBot QQ bot (personal chat histories inside); also keeps local `pnpm lint` from scanning it.
+qqbot/
 cert*/
 *.pem
 *.crt

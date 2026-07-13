@@ -176,6 +176,7 @@ function resolveCapturedToolErrorEvent(
 // `rejectOnce` so the caller's retry logic is unaffected.
 function logStreamSideError(label: string, error: unknown): void {
   const willAutoRetry = isToolRelatedError(error) || isContentArrayRelatedError(error)
+  // eslint-disable-next-line no-console -- debug is intentionally below the allowed warn/error/info: these faults auto-retry (see above)
   const log = willAutoRetry ? console.debug : console.error
   log(label, error)
 }

@@ -35,7 +35,6 @@ catalog:
   '@antfu/eslint-config': ^8.2.0
   '@anthropic-ai/claude-code': ^2.1.114
   '@arethetypeswrong/core': ^0.18.2
-  '@ax-llm/ax': ^19.0.43
   '@better-auth/cli': ^1.4.21
   '@better-auth/drizzle-adapter': ^1.6.5
   '@better-auth/oauth-provider': 1.5.6
@@ -423,7 +422,6 @@ catalogs:
     unspeech: ^0.1.14
 
 ignoredBuiltDependencies:
-  - '@ax-llm/ax'
   - '@prisma/client'
   - better-sqlite3
   - simple-git-hooks # [workaround] With `shellEmulator: true`, simple-git-hooks install may fail when no .git dir exists.
