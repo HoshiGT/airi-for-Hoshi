@@ -170,9 +170,9 @@ export const useModsServerChannelStore = defineStore('mods:channels:proj-airi:se
           connected.value = true
           flush()
           initializeListeners()
-          // Resolve the initializing promise for connections without an auth token.
-          // With a token, module:authenticated fires first and resolves it; calling
-          // resolve() again here is a no-op on an already-settled Promise.
+          // Single completion point of the initialize promise, with or without
+          // an auth token: the handshake only counts as done once the transport
+          // reaches 'ready' (see the module:authenticated handler below).
           resolve()
 
           if (isReconnect) {

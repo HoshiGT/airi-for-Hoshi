@@ -157,6 +157,29 @@ vi.mock('./modules/artistry-autonomous', () => ({
   }),
 }))
 
+// Memory consolidation surface used by `chat.ts maybeConsolidateSession`.
+// Mocked like the sibling stores above: `configured: false` short-circuits
+// consolidation, and importing the real modules would pull `providers.ts`
+// -> `analytics/posthog` -> posthog-js, whose toolbar crashes at import in
+// the node test env (reads `window.location.hash` off this file's stub).
+vi.mock('./modules/memory', () => ({
+  useMemoryStore: () => ({
+    configured: false,
+    triggerRounds: 20,
+    retainRounds: 6,
+  }),
+}))
+
+vi.mock('./chat/memory', () => ({
+  useMemoryService: () => ({
+    consolidate: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
+
+vi.mock('./chat/memory/trim', () => ({
+  planConsolidation: vi.fn(() => null),
+}))
+
 const provider = {
   chat: () => ({ baseURL: 'https://example.com/' }),
 } as unknown as ChatProvider

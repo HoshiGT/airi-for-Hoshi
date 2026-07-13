@@ -142,6 +142,10 @@ describe('channel-server store reconnect', () => {
     const client = serverSdkMocks.MockClient.instances[0]
 
     client.simulateAuthenticated()
+    // The handshake only completes on transport 'ready' (module:authenticated
+    // still has the transport in 'preparing', where transport.send() would drop
+    // messages), so connected/flush/initialize-resolution all wait for onReady.
+    client.simulateReconnectReady()
     await initializePromise
 
     expect(store.connected).toBe(true)
@@ -267,7 +271,9 @@ describe('channel-server store reconnect', () => {
     expect(secondInitializePromise).not.toBe(firstInitializePromise)
     expect(secondClient).toBeDefined()
 
+    // connected only flips on transport 'ready', not on module:authenticated.
     secondClient.simulateAuthenticated()
+    secondClient.simulateReconnectReady()
     await secondInitializePromise
 
     expect(store.connected).toBe(true)
@@ -279,7 +285,9 @@ describe('channel-server store reconnect', () => {
     const firstInitializePromise = store.initialize({ token: 'secret' })
     const firstClient = serverSdkMocks.MockClient.instances[0]
 
+    // Full first handshake: authenticated, then transport 'ready'.
     firstClient.simulateAuthenticated()
+    firstClient.simulateReconnectReady()
     await firstInitializePromise
 
     firstClient.simulateStateChange('reconnecting', 'failed')
@@ -291,6 +299,7 @@ describe('channel-server store reconnect', () => {
     expect(secondClient).toBeDefined()
 
     secondClient.simulateAuthenticated()
+    secondClient.simulateReconnectReady()
     await secondInitializePromise
 
     expect(store.connected).toBe(true)
