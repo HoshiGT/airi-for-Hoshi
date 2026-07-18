@@ -59,6 +59,7 @@ vi.mock('../stores/modules/gaming-minecraft', () => ({ useMinecraftStore: () => 
 vi.mock('../stores/modules/hearing', () => ({ useHearingStore: () => ({}) }))
 vi.mock('../stores/modules/speech', () => ({ useSpeechStore: () => ({}) }))
 vi.mock('../stores/modules/twitter', () => ({ useTwitterStore: () => ({}) }))
+vi.mock('../stores/modules/web-search', () => ({ useWebSearchStore: () => ({}) }))
 vi.mock('../stores/onboarding', () => ({ useOnboardingStore: () => ({}) }))
 vi.mock('../stores/providers', () => ({ useProvidersStore: () => ({}) }))
 vi.mock('../stores/settings', () => ({ useSettings: () => ({}), useSettingsAudioDevice: () => ({}) }))

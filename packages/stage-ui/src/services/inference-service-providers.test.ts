@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { parse } from 'zod/v4/core'
 
 import { ATLASCLOUD_DEFAULT_BASE_URL, providerAtlasCloud } from '../libs/providers/providers/atlascloud'
 import { providerOpenAICompatible } from '../libs/providers/providers/openai-compatible'
@@ -34,7 +35,14 @@ describe('services inference-service-providers', () => {
     const schema = providerAtlasCloud.createProviderConfig({ t: ((key: string) => key) as any })
 
     expect(definition?.name).toBe('Atlas Cloud')
-    expect(schema.parse({ apiKey: 'test-key' })).toEqual({
+    // NOTICE:
+    // `createProviderConfig` is typed as returning zod v4 core `$ZodType`,
+    // which has no `.parse` method (that lives on classic `z.ZodType`).
+    // Upstream's test calls `schema.parse(...)` and fails `vue-tsc`; use the
+    // top-level core `parse(schema, input)` from `zod/v4/core` instead.
+    // Removal condition: upstream widens the `createProviderConfig` return
+    // type to classic `ZodObject`, or fixes the test itself.
+    expect(parse(schema, { apiKey: 'test-key' })).toEqual({
       apiKey: 'test-key',
       baseUrl: ATLASCLOUD_DEFAULT_BASE_URL,
     })
