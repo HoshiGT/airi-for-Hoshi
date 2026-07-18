@@ -463,6 +463,7 @@ pages:
       desktop:
         title: Reset desktop settings & states
         description: Clear AIRI desktop settings and runtime state.
+        center: Move desktop window to center
         reset: Reset desktop data
     confirmations:
       tooltip: Are you sure?
@@ -476,6 +477,7 @@ pages:
       modules_reset: Module settings reset.
       providers_reset: Provider settings reset.
       all_deleted: All local data deleted.
+      desktop_window_centered: Desktop window moved to screen center.
       desktop_reset: Desktop data reset.
   models:
     description: Live2D, VRM, Spine, etc.
@@ -862,6 +864,15 @@ pages:
       access-token-secret-description: Your X / Twitter access token secret
       access-token-secret-placeholder: Enter your X / Twitter access token secret
       configured: X / Twitter is properly configured!
+    web-search:
+      title: Web Search
+      description: Let AIRI search the web for current information
+      enable: Enable Web Search
+      enable-description: Allow AIRI to search the web during chat
+      api-key: Tavily API Key
+      api-key-description: Web search is powered by Tavily. Get a free API key at tavily.com.
+      api-key-placeholder: Enter your Tavily API key
+      configured: Web search is ready to use!
     mcp-server:
       title: MCP servers
       description: Configure MCP servers and bring their tools into AIRI.
@@ -1430,6 +1441,9 @@ pages:
       n1n:
         description: n1n.ai - High-performance AI API provider.
         title: n1n
+      openpaths:
+        description: openpaths.io
+        title: OpenPaths
       openrouter:
         description: openrouter.ai
         title: OpenRouter

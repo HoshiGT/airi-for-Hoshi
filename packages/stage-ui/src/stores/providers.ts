@@ -132,7 +132,7 @@ function trackModelListLoaded(properties: {
 
   capturePosthogEvent('model_list_loaded', {
     ...properties,
-    surface: analyticsSurface(),
+    app_surface: analyticsSurface(),
   })
 }
 
@@ -150,7 +150,7 @@ function trackModelListFailed(properties: {
 
   capturePosthogEvent('model_list_failed', {
     ...properties,
-    surface: analyticsSurface(),
+    app_surface: analyticsSurface(),
   })
 }
 
@@ -2730,6 +2730,21 @@ export const useProvidersStore = defineStore('providers', () => {
     }
   }
 
+  // Non-throwing variant of getProviderMetadata for capability checks against
+  // possibly-unset provider selections (fresh installs, reset state, deleted
+  // providers persist '' or stale ids in localStorage). Callers that require
+  // the provider to exist should keep using getProviderMetadata.
+  //
+  // Issue #1761: capability computeds used `getProviderMetadata(...)?.` as if
+  // it returned undefined, but it throws — surfacing raw "Provider metadata
+  // for  not found" errors whenever no provider was selected yet.
+  function findProviderMetadata(providerId: string) {
+    if (!providerId || !providerMetadata[providerId])
+      return undefined
+
+    return getProviderMetadata(providerId)
+  }
+
   // Get all providers metadata (for settings page).
   // Order: defined providers first (already sorted by order in registry), then legacy-only providers.
   const allProvidersMetadata = computed(() => {
@@ -2919,6 +2934,7 @@ export const useProvidersStore = defineStore('providers', () => {
     providerRuntimeState,
     providerMetadata,
     getProviderMetadata,
+    findProviderMetadata,
     getTranscriptionFeatures,
     allProvidersMetadata,
     initializeProvider,

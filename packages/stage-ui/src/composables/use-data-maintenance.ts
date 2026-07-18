@@ -17,6 +17,7 @@ import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
 import { useHearingStore } from '../stores/modules/hearing'
 import { useSpeechStore } from '../stores/modules/speech'
 import { useTwitterStore } from '../stores/modules/twitter'
+import { useWebSearchStore } from '../stores/modules/web-search'
 import { useOnboardingStore } from '../stores/onboarding'
 import { useProvidersStore } from '../stores/providers'
 import { useSettings, useSettingsAudioDevice } from '../stores/settings'
@@ -35,6 +36,7 @@ export function useDataMaintenance() {
   const speechStore = useSpeechStore()
   const consciousnessStore = useConsciousnessStore()
   const twitterStore = useTwitterStore()
+  const webSearchStore = useWebSearchStore()
   const discordStore = useDiscordStore()
   const factorioStore = useFactorioStore()
   const minecraftStore = useMinecraftStore()
@@ -58,6 +60,7 @@ export function useDataMaintenance() {
     speechStore.resetState()
     consciousnessStore.resetState()
     twitterStore.resetState()
+    webSearchStore.resetState()
     discordStore.resetState()
     factorioStore.resetState()
     minecraftStore.resetState()

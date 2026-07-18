@@ -127,7 +127,8 @@ Grafana 当前不能回答：
 
 | Field | Values | Notes |
 |---|---|---|
-| `surface` | `web` / `desktop` / `mobile` | 所有关键前端事件必带 |
+| `app_surface` | `web` / `electron` / `mobile` / `auth` / `docs` / `server` | 所有关键事件的平台 / 运行端 |
+| `entry_surface` | `settings_flux` / `onboarding` / `chat_toolbar` 等受控枚举 | 业务入口；不得用于表示运行端 |
 | `provider_mode` | `official` / `custom` / `unknown` | 官方开箱即用 vs 用户自配置 |
 | `provider_id` | 白名单 ID | 不传 raw URL / raw key / 用户输入 |
 | `model_id` | 白名单或归一化后的 ID | 自定义模型用 `is_custom_model = true` |
@@ -147,6 +148,7 @@ Grafana 当前不能回答：
 | `chat_activation_started` | frontend | PostHog | 用户进入首次聊天路径或点击发送第一条消息前 |
 | `chat_activation_succeeded` | frontend | PostHog | 首次消息完成并看到 assistant response |
 | `chat_activation_failed` | frontend | PostHog | 首次消息未完成，包含配置、网络、鉴权、余额、模型等失败 |
+| `message_round_failed` | frontend | PostHog | 任意用户轮次在 assistant response 完成前失败；成功轮次的唯一终点仍为 `message_round` |
 | `official_provider_selected` | frontend | PostHog | 官方 Provider 被默认落地或在设置页被手动选择，记录 provider id 与是否自动选择 |
 | `second_turn_started` | frontend | PostHog | 同一会话开始第二轮对话 |
 
@@ -157,11 +159,13 @@ Grafana 当前不能回答：
 | `provider_mode` | yes | `official` / `custom` |
 | `provider_id` | yes | 归一化 ID |
 | `model_id` | yes | 归一化 ID |
-| `surface` | yes | web / desktop / mobile |
+| `app_surface` | yes | web / electron / mobile |
+| `conversation_id` | yes | 应用会话 ID；同一 conversation 的聊天事件保持一致 |
+| `round_id` | yes | 单轮关联 ID，复用该轮 user message id；同一轮所有聊天主链路事件保持一致 |
+| `turn_index` | yes | conversation 内从 `1` 开始的用户轮次；`second_turn_started` 固定为 `2` |
 | `time_to_first_message_ms` | success only | 从 app start 或 onboarding complete 到首次成功 |
 | `error_code` | failed only | 稳定错误码 |
 | `failure_stage` | failed only | `provider_config` / `model_list` / `message_send` / `llm_response` / `tts` |
-| `turn_index` | second turn only | 固定为 `2`，用于首轮成功后的二轮启动 |
 | `auto_selected` | official provider only | 官方默认 Provider 自动落地时为 `true` |
 
 推荐看板：
@@ -169,11 +173,41 @@ Grafana 当前不能回答：
 - 新用户 `chat_activation_started -> chat_activation_succeeded` 漏斗。
 - 按 `provider_mode` 拆分 activation conversion。
 - `chat_activation_failed` 按 `failure_stage` / `provider_id` 排名。
+- `message_round_failed` 按 `turn_index` / `failure_stage` / `provider_id` 排名，用于分析激活后的聊天失败。
 
 异常提醒：
 
 - 新用户 activation conversion 24h 环比下降超过 15%。
 - `provider_mode = official` 的 activation failure 上升，优先排查官方 Provider。
+
+### AI generation 用量事实
+
+`$ai_generation` 是 token / usage / 成本覆盖率事实来源；不要把 Prompt、回复正文、API Key、raw endpoint 发到 PostHog。
+
+| Field | Required | Notes |
+|---|---|---|
+| `$ai_trace_id` | yes | 优先使用真实 `conversation_id`；无客户端会话 header 时用 server request id 兜底 |
+| `$ai_session_id` | yes | 与 `conversation_id` 保持一致 |
+| `$ai_span_id` | yes | 与 `round_id` / generation id 保持一致 |
+| `$ai_model` | yes | 原始生成模型；不要跨 Provider 合并 |
+| `$ai_provider` | yes | 实际生成 Provider |
+| `airi_user_id` | server yes | Better Auth user id，便于和 Pro / 付费事件关联 |
+| `conversation_id` | yes | 始终存在；结合 `conversation_id_source` 判断是否真实应用会话 |
+| `conversation_id_source` | yes | `client_header` / `client_runtime` / `server_request` |
+| `round_id` | yes | 单轮或 request-level generation id |
+| `app_surface` | when known | 只表示用户产品端：`web` / `electron` / `mobile`；不要用 `server` 兜底 |
+| `capture_surface` | yes | 事件采集端：`client` / `server` |
+| `usage_source` | yes | `reported` / `estimated` / `unavailable` |
+| `token_usage_available` | yes | token 是否可用于聚合；日报 token 分析先过滤 `true` |
+| `cost_usd_source` | yes | `reported` / `estimated` / `unavailable` |
+| `cost_usd_known` | yes | `false` 不能按零成本处理，只能计入未知成本覆盖率 |
+
+日报里的 Pro token / cost：
+
+- Token 总量、P50、P90：只统计 `token_usage_available = true`。
+- AIRI USD 成本：只统计 `cost_usd_known = true`；`cost_usd_known = false` 单独报 unknown generation count / coverage。
+- 服务端 request fallback：`conversation_id_source = server_request` 只能做 request 级 usage，不能和 `message_round` 当成同一应用会话 join。
+- 模型分析按 `$ai_provider + $ai_model` 看；不要新增 `canonical_model` / `model_family` 把不同供应链揉在一起。
 
 ### Provider And Model Configuration
 
@@ -282,14 +316,14 @@ Grafana 当前不能回答：
 | Field | Required | Notes |
 |---|---|---|
 | `stt_provider_id` | yes | 归一化 ID |
-| `surface` | yes | web / desktop / mobile |
+| `app_surface` | yes | web / electron / mobile |
 | `duration_ms` | no | 用户按住或录音时长 |
 | `error_code` | failed only | `permission_denied` / `device_unavailable` / `provider_error` / `timeout` |
 
 推荐看板：
 
 - Voice input start -> STT success funnel。
-- Permission denied rate by browser / surface。
+- Permission denied rate by browser / app surface。
 - STT failure rate by Provider。
 
 ### Feedback And Bug Reports
@@ -312,7 +346,7 @@ Grafana 当前不能回答：
 | `severity` | yes | `blocker` / `major` / `minor` / `suggestion` |
 | `user_type` | yes | `new_user` / `paid_user` / `overseas_user` / `developer_user` / `role_chat_user` / `unknown` |
 | `entrypoint` | yes | `about_update_error` / `community_manual_tag` 等低基数入口 |
-| `surface` | in-app | web / desktop / mobile |
+| `app_surface` | in-app | web / electron / mobile |
 | `provider_mode` | no | 可从最近一次配置状态补齐 |
 | `description_length_bucket` | bug report | `empty` / `short` / `medium` / `long`，不要上传正文 |
 | `include_triage_context` | bug report | 是否附带页面上下文 |
@@ -395,7 +429,7 @@ Grafana 当前不能回答：
 - `has_voice`
 - `latency_ms`
 - `error_code`
-- `surface`
+- `app_surface`
 
 看板：
 
@@ -420,7 +454,7 @@ Grafana 当前不能回答：
 - `character_type`: `built_in` / `imported` / `custom`
 - `has_voice`
 - `voice_type`
-- `surface`
+- `app_surface`
 
 看板：
 
@@ -438,7 +472,7 @@ Grafana 当前不能回答：
 
 字段：
 
-- `surface`
+- `entry_surface`（付费入口，例如 `settings_flux`；运行端使用 `app_surface`）
 - `balance_state`
 - `plan_id`
 - `currency`
@@ -457,6 +491,8 @@ Grafana 当前不能回答：
 |---|---|---|
 | `first_message_sent` | 保留历史指标 | 继续用于老 dashboard；新激活口径用 `chat_activation_succeeded` |
 | `chat_activation_started` / `chat_activation_succeeded` / `chat_activation_failed` | 新核心 activation 口径 | 用来回答“用户能不能正常开始聊天” |
+| `message_send_started` / `message_sent` / `llm_*` / `message_round` / `message_round_failed` | 聊天主链路 | 共享 `conversation_id` / `round_id` / `turn_index`；`message_round` 和 `message_round_failed` 分别是单轮成功 / 失败的唯一终点；不再重复发送 `chat_started`、`assistant_response_completed`、`chat_failed` 或 chat 的通用 `feature_used` 别名 |
+| `signup_form_completed` / `signup_completed` | UI 里程碑 / 注册事实 | 前者可匿名；后者只由服务端按 Better Auth user id 发送，禁止复用同名客户端事件 |
 | `provider_card_clicked` | 保留入口点击 | 不等于配置成功；成功 / 失败看 `provider_config_succeeded` / `provider_config_failed` |
 | `first_model_selected` / `model_switched` | 保留模型选择行为 | 配置链路和模型列表健康看 `model_list_loaded` / `model_list_failed` |
 | `stt_started` / `stt_succeeded` / `stt_failed` | 保留 STT Provider 结果 | 权限和设备问题用新增 `microphone_*` / `audio_device_unavailable` 拆开 |
@@ -473,9 +509,9 @@ PostHog 线上已经能看到 `model` / `model_id` 存在自由文本风险。�
 
 - Provider、model、voice 使用稳定 ID。
 - 自定义值不要直接 group-by。
+- 不跨 Provider 合并模型名：`deepseek-chat` 和 `deepseek/deepseek-chat` 可能代表不同供应链 / 成本口径，日报按原始 Provider + model 组合看。
 - 自定义模型传：
   - `provider_id = custom`
-  - `model_family = custom`
   - `is_custom_model = true`
   - `custom_model_hash` 可选，必须单向 hash，不能还原原文。
 - 自定义 voice 传：
@@ -495,7 +531,8 @@ PostHog 线上已经能看到 `model` / `model_id` 存在自由文本风险。�
 | `voice_pack_id` | medium | 只进 PostHog / Postgres，不进 Prometheus label |
 | `error_code` | low | enum |
 | `source` | low | enum |
-| `surface` | low | enum |
+| `app_surface` | low | runtime enum |
+| `entry_surface` | low | 低基数业务入口 enum；不得复用为 runtime |
 
 Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义模型名、自定义音色名。
 
@@ -673,7 +710,7 @@ Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义�
 
 - Top failing providers: <list>
 - Top failing error codes: <list>
-- Rage-click pages / surfaces: <list>
+- Rage-click pages / app surfaces: <list>
 - Discord / QQ feedback categories:
   - performance: <count>
   - config: <count>
@@ -709,7 +746,7 @@ Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义�
 给负责上手体验的人看：
 
 - Funnel：`app_loaded -> chat_activation_started -> provider_config_succeeded -> model_list_loaded -> chat_activation_succeeded`
-- Breakdown：`provider_mode`、`surface`、`region`
+- Breakdown：`provider_mode`、`app_surface`、`region`
 - Table：Top `provider_config_failed` by `provider_id` / `error_code`
 - Timeseries：`time_to_first_message_ms` p50 / p95
 
@@ -729,7 +766,7 @@ Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义�
 
 - Grafana：5xx、LLM latency、provider failure、TTS blocked
 - PostHog：rage-click trend、failed frontend events
-- Table：Top error_code by surface / provider
+- Table：Top error_code by app surface / provider
 - Community tags：Discord / QQ 反馈分类趋势
 
 ### 分析方法
@@ -763,7 +800,7 @@ Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义�
 - `chat_activation_failed` by `failure_stage`
 - `provider_config_failed` by `error_code`
 - `model_list_failed` by `provider_id`
-- `$rageclick` by page / surface
+- `$rageclick` by page / `app_surface`
 - Discord / QQ `category = bug` 的高频词
 
 日报只报异常；周报把异常和社区反馈合并成“优先修复建议”。
@@ -863,11 +900,14 @@ Prometheus label 不放 `user_id`、`session_id`、`voice_pack_id`、自定义�
 10. 建异常检查：activation、provider config、model list、STT、TTS blocked、bug report。
 11. 建周报模板：自动填指标，社区负责人补充 Discord / QQ 反馈解释和下周建议。
 
-### 当前接入状态（2026-06-30）
+### 当前接入状态（2026-07-10）
 
 已接入代码：
 
-- Chat activation：`chat_activation_started`、`chat_activation_succeeded`、`chat_activation_failed`、`second_turn_started`；官方 Provider 选择事件为 `official_provider_selected`，实际聊天使用口径看 activation events 的 `provider_mode = official`。
+- Chat activation：`chat_activation_started`、`chat_activation_succeeded`、`chat_activation_failed` 只覆盖每个 conversation 首次 assistant response 之前的尝试；后续轮次继续发 message / latency events，第二轮单独发 `second_turn_started`。
+- Chat correlation：每次发送以 user message id 作为 `round_id`；activation、message、LLM latency、render、`message_round` 和 `message_round_failed` 事件共享 `conversation_id`、`round_id`、`turn_index`。
+- Identity：匿名 auth SPA 发 `signup_form_completed`；只有服务端 Better Auth user create hook 发 identified `signup_completed`。平台统一使用 `app_surface`，业务入口统一使用 `entry_surface`。
+- Chat event reuse：主链路使用 `message_send_started`、`message_sent`、`llm_*`、`message_round`、`message_round_failed`；每轮成功 / 失败各自只有一个终点事件，不再发送 `chat_started`、`assistant_response_completed`、`chat_failed` 和 chat 的通用 `feature_used` 别名。
 - Model list：`model_list_loaded`、`model_list_failed`。
 - Provider config：`provider_config_started`、`provider_config_succeeded`、`provider_config_failed`。
 - TTS voice：`tts_provider_selected`、`voice_selected`、`voice_preview_played`、`voice_pack_bound`、`official_tts_exposed`、`official_tts_preview_started`、`official_tts_preview_succeeded`、`official_tts_auto_enabled`。

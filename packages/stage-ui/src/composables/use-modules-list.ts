@@ -19,6 +19,7 @@ import { useQQStore } from '../stores/modules/messaging-qq'
 import { useSpeechStore } from '../stores/modules/speech'
 import { useTwitterStore } from '../stores/modules/twitter'
 import { useVisionStore } from '../stores/modules/vision'
+import { useWebSearchStore } from '../stores/modules/web-search'
 
 export interface Module {
   id: string
@@ -43,6 +44,7 @@ export function useModulesList() {
   const discordStore = useDiscordStore()
   const qqStore = useQQStore()
   const twitterStore = useTwitterStore()
+  const webSearchStore = useWebSearchStore()
   const minecraftStore = useMinecraftStore()
   const factorioStore = useFactorioStore()
   const chessStore = useChessStore()
@@ -88,6 +90,15 @@ export function useModulesList() {
       icon: 'i-solar:eye-closed-bold-duotone',
       to: '/settings/modules/vision',
       configured: visionStore.configured,
+      category: 'essential',
+    },
+    {
+      id: 'web-search',
+      name: t('settings.pages.modules.web-search.title'),
+      description: t('settings.pages.modules.web-search.description'),
+      icon: 'i-solar:magnifer-bold-duotone',
+      to: '/settings/modules/web-search',
+      configured: webSearchStore.configured,
       category: 'essential',
     },
     {

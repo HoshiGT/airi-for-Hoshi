@@ -36,6 +36,7 @@ export type FeedbackDescriptionLengthBucket = 'empty' | 'short' | 'medium' | 'lo
 export type ProductAnalyticsEntry = 'app_start' | 'onboarding' | 'settings' | 'chat' | 'pricing' | 'quota_banner' | 'unknown'
 export type MessageInputMode = 'text' | 'voice'
 export type ConversationEventSource = 'new_session' | 'fork' | 'history' | 'share_button' | 'unknown'
+export type AiUsageSource = 'reported' | 'estimated' | 'unavailable'
 
 /**
  * Full stage vocabulary of the cross-surface `oauth_callback_failed` event.
@@ -51,7 +52,13 @@ export type OauthCallbackFailureStage
     | 'parse'
     | 'relay_unreachable'
 
-interface ChatActivationBaseProperties {
+interface ChatRoundCorrelationProperties {
+  conversation_id: string
+  round_id: string
+  turn_index: number
+}
+
+interface ChatActivationBaseProperties extends ChatRoundCorrelationProperties {
   provider_mode: ProviderMode
   provider_id: string
   model_id: string
@@ -102,7 +109,7 @@ interface ConversationBaseProperties {
   model: string
 }
 
-function getConversationAnalyticsSurface(): ConversationAnalyticsSurface {
+export function getConversationAnalyticsSurface(): ConversationAnalyticsSurface {
   if (isStageTamagotchi())
     return 'electron'
 
@@ -167,23 +174,23 @@ export function useAnalytics() {
    * - Any UI surface that shows Flux packages / subscription plans renders.
    *   Current surfaces: `settings_flux` (in-app billing settings). Future
    *   surfaces (a public pricing landing page, an upsell modal) just pass a
-   *   different `surface` so the funnel split stays clean.
+   *   different `entry_surface` so the funnel split stays clean.
    *
    * Expects:
-   * - `surface` is a stable identifier — don't rename without coordinating
+   * - `entry_surface` is a stable identifier — don't rename without coordinating
    *   PostHog funnel definitions in `docs/ai-context/metrics-ownership.md`.
    */
-  function trackPricingViewed(surface: string, planPeriod?: 'monthly' | 'annual' | 'one_time') {
+  function trackPricingViewed(entrySurface: string, planPeriod?: 'monthly' | 'annual' | 'one_time') {
     if (!canCapture())
       return
-    posthog.capture('pricing_page_viewed', { surface, ...(planPeriod && { plan_period: planPeriod }) })
+    posthog.capture('pricing_page_viewed', { entry_surface: entrySurface, ...(planPeriod && { plan_period: planPeriod }) })
   }
 
   /**
    * Pricing funnel — step 2. Fires when the user picks a plan/package but
    * hasn't yet kicked off the Stripe checkout redirect.
    */
-  function trackPlanSelected(planId: string, properties?: { price_minor_unit?: number, currency?: string }) {
+  function trackPlanSelected(planId: string, properties: { entry_surface: string, price_minor_unit?: number, currency?: string }) {
     if (!canCapture())
       return
     posthog.capture('plan_selected', { plan_id: planId, ...properties })
@@ -206,7 +213,7 @@ export function useAnalytics() {
    * `apps/server/src/services/domain/product-events.ts`), keyed by the
    * Better Auth user id.
    */
-  function trackCheckoutStarted(planId: string, properties: { checkout_session_id?: string, price_minor_unit?: number, currency?: string }) {
+  function trackCheckoutStarted(planId: string, properties: { entry_surface: string, checkout_session_id?: string, price_minor_unit?: number, currency?: string }) {
     if (!canCapture())
       return
     posthog.capture(
@@ -217,14 +224,14 @@ export function useAnalytics() {
   }
 
   function trackPaywallSeen(properties: {
-    surface: string
+    entry_surface: string
     reason: 'manual_topup' | 'insufficient_balance' | 'checkout_recovery' | 'unknown'
     flux_balance_bucket: FluxBalanceBucket
   }) {
     if (!canCapture())
       return
     posthog.capture('paywall_seen', {
-      surface: properties.surface,
+      entry_surface: properties.entry_surface,
       app_surface: getConversationAnalyticsSurface(),
       reason: properties.reason,
       flux_balance_bucket: properties.flux_balance_bucket,
@@ -243,7 +250,7 @@ export function useAnalytics() {
       return
     posthog.capture('oauth_callback_failed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -253,13 +260,13 @@ export function useAnalytics() {
   function trackPasswordChanged() {
     if (!canCapture())
       return
-    posthog.capture('password_changed', { surface: getConversationAnalyticsSurface() })
+    posthog.capture('password_changed', { app_surface: getConversationAnalyticsSurface() })
   }
 
   function trackPasswordResetRequested() {
     if (!canCapture())
       return
-    posthog.capture('password_reset_requested', { surface: getConversationAnalyticsSurface() })
+    posthog.capture('password_reset_requested', { app_surface: getConversationAnalyticsSurface() })
   }
 
   function trackOauthProviderLinkStarted(properties: { provider: string }) {
@@ -272,7 +279,7 @@ export function useAnalytics() {
       'oauth_provider_link_started',
       {
         ...properties,
-        surface: getConversationAnalyticsSurface(),
+        app_surface: getConversationAnalyticsSurface(),
       },
       { send_instantly: true, transport: 'sendBeacon' },
     )
@@ -283,7 +290,7 @@ export function useAnalytics() {
       return
     posthog.capture('oauth_provider_unlinked', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -295,21 +302,7 @@ export function useAnalytics() {
   function trackAccountDeletionRequested() {
     if (!canCapture())
       return
-    posthog.capture('account_deletion_requested', { surface: getConversationAnalyticsSurface() })
-  }
-
-  function trackSignupCompleted(properties: {
-    source: string
-    referrer?: string
-    country?: string
-    locale?: string
-    utm_source?: string
-    utm_medium?: string
-    utm_campaign?: string
-  }) {
-    if (!canCapture())
-      return
-    posthog.capture('signup_completed', properties)
+    posthog.capture('account_deletion_requested', { app_surface: getConversationAnalyticsSurface() })
   }
 
   function trackOnboardingStarted(properties: { entry: ProductAnalyticsEntry }) {
@@ -317,7 +310,7 @@ export function useAnalytics() {
       return
     posthog.capture('onboarding_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -326,7 +319,7 @@ export function useAnalytics() {
       return
     posthog.capture('onboarding_completed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -357,7 +350,7 @@ export function useAnalytics() {
       from_model: fromModel,
       to_model: toModel,
       reason,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -379,37 +372,104 @@ export function useAnalytics() {
   // (per-request volume stays in DB/Grafana). These client emits supply the
   // user-facing latency picture (TTFT, render time) the server cannot see.
 
-  function trackMessageSendStarted(properties: { source: 'text' | 'voice', model?: string }) {
+  function trackMessageSendStarted(properties: ChatRoundCorrelationProperties & { source: 'text' | 'voice', model?: string }) {
     if (!canCapture())
       return
     posthog.capture('message_send_started', properties)
   }
 
-  function trackLlmRequestStarted(properties: { model: string, provider: string, has_voice: boolean }) {
+  function trackLlmRequestStarted(properties: ChatRoundCorrelationProperties & { model: string, provider: string, has_voice: boolean }) {
     if (!canCapture())
       return
     posthog.capture('llm_request_started', properties)
   }
 
   /** First token from a streaming LLM response — perceived responsiveness anchor. */
-  function trackLlmFirstToken(properties: { model: string, ttfb_ms: number }) {
+  function trackLlmFirstToken(properties: ChatRoundCorrelationProperties & { model: string, ttfb_ms: number }) {
     if (!canCapture())
       return
     posthog.capture('llm_first_token', properties)
   }
 
   /** Stream finished and the UI has fully rendered the assistant message. */
-  function trackAssistantResponseRendered(properties: { model: string, latency_ms: number }) {
+  function trackAssistantResponseRendered(properties: ChatRoundCorrelationProperties & { model: string, latency_ms: number }) {
     if (!canCapture())
       return
     posthog.capture('assistant_response_rendered', properties)
   }
 
+  /** Cost-fact event for one custom-provider generation; content is intentionally excluded. */
+  function trackAiGeneration(properties: {
+    conversation_id: string
+    round_id: string
+    provider_type: ProviderMode
+    provider_id: string
+    model_id: string
+    usage_source: AiUsageSource
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+  }) {
+    if (!canCapture())
+      return
+
+    const totalTokens = properties.total_tokens
+      ?? (properties.input_tokens != null && properties.output_tokens != null
+        ? properties.input_tokens + properties.output_tokens
+        : undefined)
+
+    posthog.capture('$ai_generation', {
+      $ai_trace_id: properties.conversation_id,
+      $ai_session_id: properties.conversation_id,
+      $ai_span_id: properties.round_id,
+      $ai_model: properties.model_id,
+      $ai_provider: properties.provider_id,
+      ...(properties.input_tokens != null && { $ai_input_tokens: properties.input_tokens }),
+      ...(properties.output_tokens != null && { $ai_output_tokens: properties.output_tokens }),
+      ...(totalTokens != null && { $ai_total_tokens: totalTokens }),
+      $insert_id: `ai-generation:${properties.round_id}`,
+      app_surface: getConversationAnalyticsSurface(),
+      capture_surface: 'client',
+      conversation_id: properties.conversation_id,
+      conversation_id_source: 'client_runtime',
+      round_id: properties.round_id,
+      provider_type: properties.provider_type,
+      usage_source: properties.usage_source,
+      token_usage_available: properties.usage_source !== 'unavailable',
+      cost_usd_source: 'unavailable',
+      cost_usd_known: false,
+    })
+  }
+
   /** Closing event for one full message round (user send → assistant render). */
-  function trackMessageRound(properties: { duration_ms: number, has_voice: boolean, model: string }) {
+  function trackMessageRound(properties: ChatRoundCorrelationProperties & {
+    duration_ms: number
+    has_voice: boolean
+    model: string
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+    usage_source?: AiUsageSource
+  }) {
     if (!canCapture())
       return
     posthog.capture('message_round', properties)
+  }
+
+  /** Canonical failure event for every user-to-assistant round, including post-activation turns. */
+  function trackMessageRoundFailed(properties: ChatRoundCorrelationProperties & {
+    provider_id: string
+    model_id: string
+    source: 'text' | 'voice'
+    error_code: string
+    failure_stage: ChatActivationFailureStage
+  }) {
+    if (!canCapture())
+      return
+    posthog.capture('message_round_failed', {
+      ...properties,
+      app_surface: getConversationAnalyticsSurface(),
+    })
   }
 
   // ─── Chat activation events ──────────────────────────────────────────
@@ -419,7 +479,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_activation_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -428,7 +488,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_activation_succeeded', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -440,19 +500,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_activation_failed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
-    })
-  }
-
-  function trackChatStarted(properties: ConversationBaseProperties & {
-    entry: ProductAnalyticsEntry
-    is_paid_user?: boolean
-  }) {
-    if (!canCapture())
-      return
-    posthog.capture('chat_started', {
-      ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -467,11 +515,13 @@ export function useAnalytics() {
       return
     posthog.capture('official_provider_selected', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
   function trackMessageSent(properties: ConversationBaseProperties & {
+    round_id: string
+    turn_index: number
     message_id?: string
     message_index?: number
     message_length?: number
@@ -482,40 +532,16 @@ export function useAnalytics() {
       return
     posthog.capture('message_sent', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
-  function trackAssistantResponseCompleted(properties: ConversationBaseProperties & {
-    latency_ms?: number
-    completion_length?: number
-  }) {
-    if (!canCapture())
-      return
-    posthog.capture('assistant_response_completed', {
-      ...properties,
-      surface: getConversationAnalyticsSurface(),
-    })
-  }
-
-  function trackChatFailed(properties: ConversationBaseProperties & {
-    failure_stage: ChatActivationFailureStage
-    error_code: string
-  }) {
-    if (!canCapture())
-      return
-    posthog.capture('chat_failed', {
-      ...properties,
-      surface: getConversationAnalyticsSurface(),
-    })
-  }
-
-  function trackSecondTurnStarted(properties: ChatActivationBaseProperties & { turn_index: number }) {
+  function trackSecondTurnStarted(properties: ChatActivationBaseProperties) {
     if (!canCapture())
       return
     posthog.capture('second_turn_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -529,7 +555,7 @@ export function useAnalytics() {
       return
     posthog.capture('model_list_loaded', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -543,7 +569,7 @@ export function useAnalytics() {
       return
     posthog.capture('model_list_failed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -552,7 +578,7 @@ export function useAnalytics() {
       return
     posthog.capture('provider_config_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -561,7 +587,7 @@ export function useAnalytics() {
       return
     posthog.capture('provider_config_succeeded', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
     trackProviderConfigCompleted({
       ...properties,
@@ -583,7 +609,7 @@ export function useAnalytics() {
       return
     posthog.capture('provider_config_failed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -599,7 +625,7 @@ export function useAnalytics() {
       provider_type: properties.provider_mode,
       provider_name: properties.provider_id,
       entry_page: properties.step,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -611,7 +637,7 @@ export function useAnalytics() {
       return
     posthog.capture('official_provider_enabled', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -622,7 +648,7 @@ export function useAnalytics() {
       return
     posthog.capture('tts_stop_clicked', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -631,7 +657,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_session_selected', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -640,7 +666,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_message_deleted', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -649,7 +675,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_messages_cleared', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -658,7 +684,7 @@ export function useAnalytics() {
       return
     posthog.capture('chat_message_retried', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -672,7 +698,7 @@ export function useAnalytics() {
       return
     posthog.capture('conversation_created', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -684,7 +710,7 @@ export function useAnalytics() {
       return
     posthog.capture('conversation_renamed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -696,7 +722,7 @@ export function useAnalytics() {
       return
     posthog.capture('conversation_shared', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -709,7 +735,7 @@ export function useAnalytics() {
       return
     posthog.capture('conversation_deleted', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -738,11 +764,11 @@ export function useAnalytics() {
       return
     posthog.capture('voice_input_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
     posthog.capture('voice_input_used', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -751,7 +777,7 @@ export function useAnalytics() {
       return
     posthog.capture('microphone_permission_requested', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -760,7 +786,7 @@ export function useAnalytics() {
       return
     posthog.capture('microphone_permission_denied', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -769,7 +795,7 @@ export function useAnalytics() {
       return
     posthog.capture('audio_device_unavailable', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -778,7 +804,7 @@ export function useAnalytics() {
       return
     posthog.capture('voice_input_cancelled', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -793,7 +819,7 @@ export function useAnalytics() {
       return
     posthog.capture('bug_report_submitted', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -802,7 +828,7 @@ export function useAnalytics() {
       return
     posthog.capture('feedback_submitted', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -848,7 +874,7 @@ export function useAnalytics() {
       return
     posthog.capture('tts_provider_selected', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -861,7 +887,7 @@ export function useAnalytics() {
       return
     posthog.capture('voice_selected', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -874,7 +900,7 @@ export function useAnalytics() {
       return
     posthog.capture('voice_preview_played', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -886,7 +912,7 @@ export function useAnalytics() {
       return
     posthog.capture('voice_pack_bound', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -900,7 +926,7 @@ export function useAnalytics() {
       return
     posthog.capture('attachment_uploaded', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -909,7 +935,7 @@ export function useAnalytics() {
       return
     posthog.capture('official_tts_exposed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -922,7 +948,7 @@ export function useAnalytics() {
       return
     posthog.capture('preset_used', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -936,7 +962,7 @@ export function useAnalytics() {
       return
     posthog.capture('official_tts_preview_started', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -951,7 +977,7 @@ export function useAnalytics() {
       return
     posthog.capture('official_tts_preview_succeeded', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -966,7 +992,7 @@ export function useAnalytics() {
       return
     posthog.capture('provider_switched', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -980,7 +1006,7 @@ export function useAnalytics() {
       return
     posthog.capture('settings_changed', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -993,7 +1019,7 @@ export function useAnalytics() {
       return
     posthog.capture('support_contacted', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1005,7 +1031,7 @@ export function useAnalytics() {
       return
     posthog.capture('official_tts_auto_enabled', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1029,7 +1055,7 @@ export function useAnalytics() {
       return
     posthog.capture('card_edited', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1039,7 +1065,7 @@ export function useAnalytics() {
       return
     posthog.capture('scene_background_set', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1097,7 +1123,7 @@ export function useAnalytics() {
     posthog.capture('flux_low_warning_shown', properties)
   }
 
-  function trackFluxTopupClicked(properties: { balance: number, surface: string }) {
+  function trackFluxTopupClicked(properties: { balance: number, entry_surface: string }) {
     if (!canCapture())
       return
     posthog.capture('flux_topup_clicked', properties)
@@ -1134,7 +1160,7 @@ export function useAnalytics() {
       return
     posthog.capture('feature_used', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1153,7 +1179,7 @@ export function useAnalytics() {
       return
     posthog.capture('data_action', {
       ...properties,
-      surface: getConversationAnalyticsSurface(),
+      app_surface: getConversationAnalyticsSurface(),
     })
   }
 
@@ -1243,7 +1269,6 @@ export function useAnalytics() {
     trackPlanSelected,
     trackCheckoutStarted,
     trackPaywallSeen,
-    trackSignupCompleted,
     trackOauthCallbackFailed,
     trackPasswordChanged,
     trackPasswordResetRequested,
@@ -1261,11 +1286,10 @@ export function useAnalytics() {
     trackLlmRequestStarted,
     trackLlmFirstToken,
     trackAssistantResponseRendered,
-    trackAssistantResponseCompleted,
+    trackAiGeneration,
     trackMessageRound,
-    trackChatStarted,
+    trackMessageRoundFailed,
     trackMessageSent,
-    trackChatFailed,
     trackChatActivationStarted,
     trackChatActivationSucceeded,
     trackChatActivationFailed,
