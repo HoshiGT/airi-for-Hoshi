@@ -20,6 +20,17 @@ const input = defineModel<string>({
 const textareaRef = ref<HTMLTextAreaElement>()
 const textareaHeight = ref('auto')
 
+// NOTICE:
+// When the browser can size the field to its content natively (`field-sizing:
+// content`, Chromium 123+), we let CSS do the auto-grow. The old JS path below
+// writes `height: auto` and then reads `scrollHeight` on every keystroke, which
+// forces a synchronous full-document layout flush; in a long chat the whole
+// message list gets re-laid-out per keystroke and typing feels laggy.
+// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/field-sizing
+// Removal condition: once every target runtime supports field-sizing (Firefox
+// still lacks it as of 2026-07), delete the JS fallback watcher entirely.
+const supportsFieldSizing = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('field-sizing', 'content')
+
 function onKeyDown(e: KeyboardEvent) {
   if (!props.submitOnEnter)
     return
@@ -43,31 +54,34 @@ function onPaste(e: ClipboardEvent) {
 
 // javascript - Creating a textarea with auto-resize - Stack Overflow
 // https://stackoverflow.com/questions/454202/creating-a-textarea-with-auto-resize
-watch(input, () => {
-  textareaHeight.value = 'auto'
-  requestAnimationFrame(() => {
-    if (!textareaRef.value)
-      return
-    if (input.value === '') {
-      textareaHeight.value = props.defaultHeight || 'fit-content'
-      return
-    }
+// Fallback path only: runs where `field-sizing: content` is unsupported.
+if (!supportsFieldSizing) {
+  watch(input, () => {
+    textareaHeight.value = 'auto'
+    requestAnimationFrame(() => {
+      if (!textareaRef.value)
+        return
+      if (input.value === '') {
+        textareaHeight.value = props.defaultHeight || 'fit-content'
+        return
+      }
 
-    // NOTICE: not sure why 4px is required but if not added, when
-    // input happened and placeholder now disappeared, the textarea will shrink
-    // a little bit and cause the input box to shake.
-    // TODO: find out the root cause and remove this magic number, or at least
-    // reference a more specific source.
-    textareaHeight.value = `${textareaRef.value.scrollHeight + 4}px`
-  })
-}, { immediate: true })
+      // NOTICE: not sure why 4px is required but if not added, when
+      // input happened and placeholder now disappeared, the textarea will shrink
+      // a little bit and cause the input box to shake.
+      // TODO: find out the root cause and remove this magic number, or at least
+      // reference a more specific source.
+      textareaHeight.value = `${textareaRef.value.scrollHeight + 4}px`
+    })
+  }, { immediate: true })
+}
 </script>
 
 <template>
   <textarea
     ref="textareaRef"
     v-model="input"
-    :style="{ height: textareaHeight }"
+    :style="supportsFieldSizing ? 'field-sizing: content' : { height: textareaHeight }"
     @keydown="onKeyDown"
     @paste="onPaste"
   />
