@@ -99,15 +99,6 @@ export const CONTEXT_HYGIENE_PREAMBLE = [
  */
 const MAX_ATTACHED_IMAGES = 5
 
-/**
- * Default cap on how many trailing conversation rounds {@link composeQueryInput}
- * replays. AIRI resends the entire history every request, so without a cap the
- * transcript — and thus token cost — grows linearly with conversation length.
- * A "round" is counted by user turns. Override per-call via options; the service
- * wires `CLAUDE_BRAIN_MAX_HISTORY` to it.
- */
-export const DEFAULT_MAX_HISTORY_ROUNDS = 10
-
 // Historical tool traffic is replayed verbatim on every request and long
 // argument dumps / tool outputs dominate the transcript's token cost, so both
 // are clipped. The current round's tool results are exempt (see below): the
@@ -126,9 +117,11 @@ function clip(text: string, max: number): string {
 /** Options for {@link composeQueryInput}. */
 export interface ComposeOptions {
   /**
-   * Replay only the last N user-turn rounds; older dialogue collapses to a
-   * single omission marker.
-   * @default {@link DEFAULT_MAX_HISTORY_ROUNDS}
+   * Cap replay to the last N user-turn rounds; older dialogue collapses to a
+   * single omission marker. Undefined or non-positive replays the *full*
+   * history — the default, so the persona keeps the whole conversation in
+   * context. Set a positive integer to opt into the token-saving cap.
+   * @default unlimited — the entire conversation is replayed
    */
   maxHistoryRounds?: number
 }
@@ -187,7 +180,11 @@ function imagesOf(content: OpenAIChatMessage['content']): PromptBlock[] {
  *   conversation. Tool arguments and (historical) tool results are also clipped.
  */
 export function composeQueryInput(messages: OpenAIChatMessage[], options: ComposeOptions = {}): ComposedQueryInput {
-  const maxHistoryRounds = Math.max(1, options.maxHistoryRounds ?? DEFAULT_MAX_HISTORY_ROUNDS)
+  // No cap by default: the full history is replayed so the persona keeps the
+  // whole relationship in context. A positive `maxHistoryRounds` opts into the
+  // token-saving cap.
+  const cap = options.maxHistoryRounds
+  const historyCap = typeof cap === 'number' && Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : undefined
 
   const systemParts: string[] = []
   const transcript: string[] = []
@@ -207,8 +204,8 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
     if (message.role === 'user')
       userIndices.push(index)
   }
-  const truncated = userIndices.length > maxHistoryRounds
-  const cutoffIndex = truncated ? userIndices[userIndices.length - maxHistoryRounds] : -1
+  const truncated = historyCap !== undefined && userIndices.length > historyCap
+  const cutoffIndex = truncated ? userIndices[userIndices.length - historyCap] : -1
 
   if (truncated)
     transcript.push('(Earlier conversation omitted.)')

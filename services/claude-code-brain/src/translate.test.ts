@@ -120,6 +120,22 @@ describe('composeQueryInput', () => {
     expect(textBlockOf(blocks)).toContain('(older screenshot omitted)')
   })
 
+  it('replays the full history by default (no cap)', () => {
+    // 20 user rounds, no maxHistoryRounds option → nothing is dropped. Full
+    // context is the default so the persona keeps the whole conversation.
+    const messages = []
+    for (let i = 1; i <= 20; i++) {
+      messages.push({ role: 'user', content: `问题${i}` })
+      messages.push({ role: 'assistant', content: `回答${i}` })
+    }
+    const { blocks } = composeQueryInput(messages)
+    const prompt = textBlockOf(blocks)
+
+    expect(prompt).not.toContain('(Earlier conversation omitted.)')
+    expect(prompt).toContain('[User]: 问题1')
+    expect(prompt).toContain('[User]: 问题20')
+  })
+
   it('replays every round when the count is within the history cap', () => {
     const messages = [
       { role: 'user', content: '第一句' },

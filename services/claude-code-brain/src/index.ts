@@ -65,12 +65,14 @@ const EFFORT = (process.env.CLAUDE_BRAIN_EFFORT || 'low') as 'low' | 'medium' | 
 const FORWARD_THINKING = ['1', 'true'].includes(process.env.CLAUDE_BRAIN_FORWARD_THINKING ?? '')
 
 /**
- * How many trailing conversation rounds to replay. AIRI resends the full
- * history each request, so without a cap the transcript — and the per-request
- * token bill — grows linearly with the conversation. `NaN`/0/negative fall back
- * to the default; raise it for longer memory at higher cost.
+ * Optional cap on replayed conversation rounds. By default the full history is
+ * replayed so the persona keeps her whole memory of the relationship — the
+ * transcript (and per-request token bill) then grows with the conversation.
+ * Set `CLAUDE_BRAIN_MAX_HISTORY` to a positive integer to opt into a cap and
+ * curb that growth on very long chats; unset/0/negative means unlimited.
  */
-const MAX_HISTORY_ROUNDS = Math.max(1, Number(process.env.CLAUDE_BRAIN_MAX_HISTORY) || 10)
+const historyRoundsRaw = Number(process.env.CLAUDE_BRAIN_MAX_HISTORY)
+const MAX_HISTORY_ROUNDS = Number.isInteger(historyRoundsRaw) && historyRoundsRaw > 0 ? historyRoundsRaw : undefined
 
 /**
  * Grace window between the first captured tool call and aborting the query:
@@ -445,6 +447,6 @@ server.once('error', (error: NodeJS.ErrnoException) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-  log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
+  log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS ?? 'unlimited' }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
   log.log(`  baseUrl: http://localhost:${PORT}/v1/`)
 })
