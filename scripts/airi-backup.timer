@@ -1,0 +1,14 @@
+[Unit]
+Description=Schedule AIRI user-data backups
+
+[Timer]
+# Once a day. Persistent=true runs a missed backup as soon as possible after the
+# machine/session comes back, so an off day does not skip the snapshot entirely.
+OnCalendar=daily
+Persistent=true
+# Spread the run out a little so it never fires exactly at midnight alongside
+# every other daily job.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
