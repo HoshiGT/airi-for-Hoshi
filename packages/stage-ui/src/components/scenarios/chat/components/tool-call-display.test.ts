@@ -17,6 +17,16 @@ describe('tool call display helpers', () => {
     expect(text).toContain('"mode": "focus"')
   })
 
+  it('renders a content-part array as text plus a marker instead of a base64 blob', () => {
+    const text = normalizeToolResultText([
+      { type: 'text', text: 'This is a screenshot of the user\'s screen.' },
+      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAABBBBCCCC' } },
+    ])
+
+    expect(text).toBe('This is a screenshot of the user\'s screen.\n[image]')
+    expect(text).not.toContain('base64')
+  })
+
   /**
    * @example
    * expect(createToolResultError('Tool failed')?.message).toBe('Tool failed')
