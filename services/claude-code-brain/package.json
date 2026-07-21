@@ -5,9 +5,9 @@
   "private": true,
   "description": "OpenAI-compatible bridge that serves Claude (via the Claude Agent SDK + Claude subscription auth) as a chat provider for AIRI",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
-    "dev:xwayland": "tsx watch src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev:xwayland": "tsx watch --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
