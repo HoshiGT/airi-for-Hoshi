@@ -5,7 +5,8 @@ Serves your **Claude subscription** (through the Claude Agent SDK, i.e. Claude C
 ## What it does
 
 - Exposes `POST /v1/chat/completions` (SSE streaming + non-streaming) and `GET /v1/models` on `127.0.0.1:14515`.
-- Translates AIRI's OpenAI-shaped chat (system prompt = character card + toolset prompts, full message history) into a single Agent SDK `query()` call with built-in tools disabled — Claude only talks; it never touches your filesystem or terminal.
+- Translates AIRI's OpenAI-shaped chat (system prompt = character card + toolset prompts, full message history) into an Agent SDK `query()` call with built-in tools disabled — Claude only talks; it never touches your filesystem or terminal.
+- **Prompt-cache reuse**: AIRI is stateless and resends the whole history every turn, which would re-price the growing transcript at full rate each message. Instead the bridge keeps one SDK **session per conversation** and `resume`s it, sending only the new turn — so the stable prefix is cache-*read* (0.1x) instead of cache-*created* (1.25x), the way Claude Code stays cheap across a long chat (measured ~10x cheaper on the transcript). Sessions are keyed off the user-message sequence (never the reply, which AIRI strips markers/reasoning from). Pure text turns take this path; tool turns fall back to replaying full history and invalidate the session. Toggle with `CLAUDE_BRAIN_SESSIONS`.
 - **Tool passthrough**: AIRI's own tools (desktop control, web search, ...) are re-registered as capture-only in-process MCP tools. When Claude calls one, the bridge intercepts the call before execution and returns it to AIRI in OpenAI `tool_calls` format; AIRI executes it (screenshot, mouse move, search) and calls back with the result.
 - **Image passthrough**: base64 images in user messages and tool results (e.g. `desktop_look` screenshots) are forwarded as real Anthropic image blocks — but only from the round currently being answered; older screenshots are dropped to keep requests small.
 - Thinking deltas are filtered out; only reply text reaches AIRI, so `<|EMOTE_...|>` / `<|STICKER_...|>` markers work as usual.
@@ -18,7 +19,13 @@ Serves your **Claude subscription** (through the Claude Agent SDK, i.e. Claude C
 3. In AIRI: Settings → Providers → **OpenAI Compatible** → baseUrl `http://localhost:14515/v1/` (any non-empty API key works; it is ignored).
 4. Settings → Modules → Consciousness → pick this provider and a model (`default` = your Claude Code default; or `claude-sonnet-5`, `claude-opus-4-8`, `claude-haiku-4-5`).
 
-Environment knobs: `CLAUDE_BRAIN_PORT` (default `14515`), `CLAUDE_BRAIN_EFFORT` (`low` | `medium` | `high`, default `low` — chat latency beats reasoning depth), `CLAUDE_BRAIN_FORWARD_THINKING` (`1`/`true` to stream Claude's thinking to AIRI as `reasoning_content`, shown as the collapsed grey reasoning line above the reply; thinking is adaptive — casual chat gets none, hard questions get a summarized first-person trace at any effort level. Off by default because the trace may still reference system-prompt internals).
+Environment knobs:
+
+- `CLAUDE_BRAIN_PORT` — listen port (default `14515`).
+- `CLAUDE_BRAIN_EFFORT` — `low` | `medium` | `high` (default `low`; chat latency beats reasoning depth).
+- `CLAUDE_BRAIN_SESSIONS` — prompt-cache session reuse (default **on**); set `0`/`false` to force the stateless full-history flatten on every turn.
+- `CLAUDE_BRAIN_MAX_HISTORY` — cap replayed rounds on the fresh path. Unset/`0` replays the full conversation (default, so the persona keeps her whole memory); a positive integer trims to the last N user rounds to curb tokens on very long chats.
+- `CLAUDE_BRAIN_FORWARD_THINKING` — `1`/`true` to stream Claude's thinking to AIRI as `reasoning_content`, shown as a collapsible "thinking" disclosure above the reply; thinking is adaptive — casual chat gets none, hard questions get a summarized first-person trace at any effort level. Off by default because the trace may still reference system-prompt internals.
 
 ## When not to use it
 

@@ -126,7 +126,8 @@ export interface ComposeOptions {
   maxHistoryRounds?: number
 }
 
-function textOf(content: OpenAIChatMessage['content']): string {
+/** Concatenates the text parts of an OpenAI message content (ignores images). */
+export function textOf(content: OpenAIChatMessage['content']): string {
   if (typeof content === 'string')
     return content
   if (!Array.isArray(content))
@@ -186,7 +187,6 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
   const cap = options.maxHistoryRounds
   const historyCap = typeof cap === 'number' && Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : undefined
 
-  const systemParts: string[] = []
   const transcript: string[] = []
   const images: PromptBlock[] = []
 
@@ -211,12 +211,10 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
     transcript.push('(Earlier conversation omitted.)')
 
   for (const [index, message] of messages.entries()) {
-    if (message.role === 'system') {
-      const text = textOf(message.content)
-      if (text.trim())
-        systemParts.push(text)
+    // System messages carry the persona; composeSystemPrompt joins them into the
+    // system prompt, so they never enter the transcript.
+    if (message.role === 'system')
       continue
-    }
 
     // Dropped by the history cap; the omission marker above stands in for it.
     if (index < cutoffIndex)
@@ -258,7 +256,7 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
     }
   }
 
-  const systemPrompt = [CONTEXT_HYGIENE_PREAMBLE, ...systemParts].join('\n\n')
+  const systemPrompt = composeSystemPrompt(messages)
 
   // Single fresh user turn: hand the text over directly, no transcript framing.
   if (transcript.length === 1 && transcript[0].startsWith('[User]: ') && images.length === 0)
@@ -279,6 +277,62 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
       ...images.slice(-MAX_ATTACHED_IMAGES),
     ],
   }
+}
+
+/**
+ * Joins the hygiene preamble and every `system` message into the SDK system
+ * prompt. Shared by the fresh path ({@link composeQueryInput}) and the resume
+ * path, which re-sends the same persona each turn so a resumed session never
+ * drifts from the card AIRI currently has loaded.
+ */
+export function composeSystemPrompt(messages: OpenAIChatMessage[]): string {
+  const systemParts: string[] = []
+  for (const message of messages) {
+    if (message.role !== 'system')
+      continue
+    const text = textOf(message.content)
+    if (text.trim())
+      systemParts.push(text)
+  }
+  return [CONTEXT_HYGIENE_PREAMBLE, ...systemParts].join('\n\n')
+}
+
+/**
+ * Blocks for just the current round — the messages after the last assistant
+ * turn — sent when resuming a cached session, where the prior history already
+ * lives in the session and only the new turn goes on the wire. Mirrors the
+ * current-round text/image handling in {@link composeQueryInput} (images capped
+ * at {@link MAX_ATTACHED_IMAGES}).
+ */
+export function composeCurrentRound(messages: OpenAIChatMessage[]): PromptBlock[] {
+  const lastAssistantIndex = messages.reduce(
+    (last, message, index) => (message.role === 'assistant' ? index : last),
+    -1,
+  )
+
+  const textParts: string[] = []
+  const images: PromptBlock[] = []
+  for (const [index, message] of messages.entries()) {
+    if (index <= lastAssistantIndex)
+      continue
+
+    if (message.role === 'user') {
+      const text = textOf(message.content)
+      images.push(...imagesOf(message.content))
+      if (text.trim())
+        textParts.push(text)
+    }
+    else if (message.role === 'tool') {
+      // Tool continuations take the fresh path, so this is defensive: keep the
+      // round faithful if a tool result ever reaches the resume path.
+      const text = textOf(message.content)
+      images.push(...imagesOf(message.content))
+      const label = message.name ? `Tool ${message.name}` : 'Tool'
+      textParts.push(`[${label} returned]: ${text}`)
+    }
+  }
+
+  return [{ type: 'text', text: textParts.join('\n\n') }, ...images.slice(-MAX_ATTACHED_IMAGES)]
 }
 
 /**

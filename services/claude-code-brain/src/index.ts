@@ -41,8 +41,9 @@ import { Buffer } from 'node:buffer'
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import { Format, LogLevel, useLogg } from '@guiiai/logg'
 
+import { decideStrategy, SessionRegistry, sessionStoreKey } from './sessions'
 import { estimateQueryTokens } from './token-estimate'
-import { ADVERTISED_MODELS, chunkOf, completionOf, composeQueryInput, finalChunkOf, jsonSchemaToZodShape, reasoningChunkOf, resolveModelOption, toolCallChunkOf } from './translate'
+import { ADVERTISED_MODELS, chunkOf, completionOf, composeCurrentRound, composeQueryInput, composeSystemPrompt, finalChunkOf, jsonSchemaToZodShape, reasoningChunkOf, resolveModelOption, toolCallChunkOf } from './translate'
 
 const log = useLogg('ClaudeCodeBrain').withLogLevel(LogLevel.Log).withFormat(Format.Pretty)
 
@@ -73,6 +74,21 @@ const FORWARD_THINKING = ['1', 'true'].includes(process.env.CLAUDE_BRAIN_FORWARD
  */
 const historyRoundsRaw = Number(process.env.CLAUDE_BRAIN_MAX_HISTORY)
 const MAX_HISTORY_ROUNDS = Number.isInteger(historyRoundsRaw) && historyRoundsRaw > 0 ? historyRoundsRaw : undefined
+
+/**
+ * Prompt-cache reuse (plan: sequential-leaping-wombat). Keep an SDK session per
+ * conversation and resume it — sending only the new turn — instead of
+ * re-flattening full history each request, so the stable prefix is cache-read
+ * (0.1x) not cache-created (1.25x). On by default (measured ~10x cheaper on the
+ * growing context); set `CLAUDE_BRAIN_SESSIONS=0` to fall back to the stateless
+ * flatten path. Only pure text turns take the session path; tool turns flatten
+ * and invalidate the session.
+ */
+const SESSIONS_ENABLED = !['0', 'false'].includes(process.env.CLAUDE_BRAIN_SESSIONS ?? '')
+
+// Process-lifetime conversation→session map. In-memory only: a miss just costs
+// one uncached turn, so it need not survive restarts.
+const sessionRegistry = new SessionRegistry()
 
 /**
  * Grace window between the first captured tool call and aborting the query:
@@ -191,16 +207,31 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
     return
   }
 
-  const { systemPrompt, blocks } = composeQueryInput(request.messages, { maxHistoryRounds: MAX_HISTORY_ROUNDS })
-  if (blocks.length === 0) {
-    respondError(res, 400, 'No usable content found in `messages`')
-    return
-  }
-
   const model = request.model || 'default'
   const completionId = `chatcmpl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   const streaming = request.stream !== false
   const requestTools = request.tools ?? []
+
+  // Resume a cached session (send only the new turn) when we hold one for this
+  // conversation; otherwise flatten the full history. The persona system prompt
+  // is re-sent on both paths so a resumed session never drifts from the card
+  // AIRI currently has loaded.
+  const strategy = SESSIONS_ENABLED ? decideStrategy(request.messages, sessionRegistry) : { mode: 'fresh' as const }
+  let systemPrompt: string
+  let blocks: PromptBlock[]
+  if (strategy.mode === 'resume') {
+    systemPrompt = composeSystemPrompt(request.messages)
+    blocks = composeCurrentRound(request.messages)
+  }
+  else {
+    const composed = composeQueryInput(request.messages, { maxHistoryRounds: MAX_HISTORY_ROUNDS })
+    systemPrompt = composed.systemPrompt
+    blocks = composed.blocks
+  }
+  if (blocks.length === 0) {
+    respondError(res, 400, 'No usable content found in `messages`')
+    return
+  }
 
   // Per-request budget visibility: a single line showing where the (estimated)
   // input tokens go, so a runaway component — usually the replayed transcript —
@@ -208,6 +239,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
   const tokens = estimateQueryTokens({ systemPrompt, blocks, tools: requestTools })
   log.withFields({
     model,
+    mode: strategy.mode,
     system: tokens.systemPromptTokens,
     transcript: tokens.transcriptTokens,
     images: `${tokens.imageTokens} (${tokens.imageCount})`,
@@ -258,6 +290,9 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
     options: {
       abortController,
       systemPrompt,
+      // Resume replays the session's history server-side (cache-read); only the
+      // current-round blocks above go on the wire. Omitted on the fresh path.
+      ...(strategy.mode === 'resume' ? { resume: strategy.sessionId } : {}),
       model: resolveModelOption(model),
       effort: EFFORT,
       // NOTICE:
@@ -298,8 +333,17 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
 
   let fullText = ''
   let streamedAnyDelta = false
+  // Captured from the SDK stream (every message carries it) to remember/resume
+  // this conversation's session on the next turn.
+  let capturedSessionId: string | undefined
 
   const respondCapturedToolCalls = () => {
+    // The tool-call turn aborted mid-reply, leaving any resumed session
+    // inconsistent (assistant emitted tool_use, no tool_result), so drop it —
+    // the next turn (tool result) replays full history via the fresh path.
+    if (strategy.mode === 'resume')
+      sessionRegistry.invalidate(strategy.lookupKey)
+
     if (res.writableEnded)
       return
     if (streaming) {
@@ -315,6 +359,9 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
 
   try {
     for await (const message of generation) {
+      if ('session_id' in message && typeof message.session_id === 'string' && message.session_id)
+        capturedSessionId = message.session_id
+
       if (message.type === 'stream_event') {
         const event = message.event
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text) {
@@ -349,6 +396,31 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
         if (capturedCalls.length > 0) {
           respondCapturedToolCalls()
           return
+        }
+
+        // Phase A measurement (plan: sequential-leaping-wombat): surface the
+        // SDK's cache accounting each turn so caching effectiveness is provable.
+        // With a fresh query() per request (today) cache_read stays ~0 and every
+        // input token is repriced — this is the baseline the session-resume work
+        // must move. cache_read_input_tokens billed at ~10%, so a high ratio here
+        // is the cost win.
+        if (message.usage) {
+          log.withFields({
+            input: message.usage.input_tokens,
+            output: message.usage.output_tokens,
+            cacheRead: message.usage.cache_read_input_tokens,
+            cacheCreate: message.usage.cache_creation_input_tokens,
+          }).log('result cache accounting')
+        }
+
+        // Remember the session so the next turn of this conversation resumes it
+        // (send only the new turn → cache-read prefix). Keyed by the user-message
+        // sequence so it survives AIRI stripping markers/reasoning from replays.
+        // On resume, the old key is dropped so at most one key lives per turn.
+        if (SESSIONS_ENABLED && capturedSessionId) {
+          if (strategy.mode === 'resume')
+            sessionRegistry.invalidate(strategy.lookupKey)
+          sessionRegistry.remember(sessionStoreKey(request.messages), capturedSessionId)
         }
 
         fullText = message.result
@@ -390,6 +462,12 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse):
         res.end()
       return
     }
+
+    // Self-heal a bad resume: if a resumed session errored (e.g. it was evicted
+    // from the SDK's on-disk store), drop it so the next turn replays full
+    // history via the fresh path instead of failing again.
+    if (strategy.mode === 'resume')
+      sessionRegistry.invalidate(strategy.lookupKey)
 
     log.withError(error as Error).error('Chat completion failed')
     if (streaming && res.headersSent) {
@@ -447,6 +525,6 @@ server.once('error', (error: NodeJS.ErrnoException) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-  log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS ?? 'unlimited' }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
+  log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS ?? 'unlimited', sessions: SESSIONS_ENABLED }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
   log.log(`  baseUrl: http://localhost:${PORT}/v1/`)
 })
