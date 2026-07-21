@@ -114,6 +114,17 @@ function clip(text: string, max: number): string {
   return `${text.slice(0, max)}…[+${text.length - max} chars]`
 }
 
+// Some tools embed a full base64 data URL inside their JSON result text — e.g.
+// image_journal returns the generated image's data URL so the chat UI can render
+// it inline. The model can do nothing with a base64 blob as text, yet one image
+// is tens of thousands of tokens, so strip any data URL out of tool-result text
+// before it enters the transcript. Legitimate images the model SHOULD see arrive
+// as `image_url` content parts (handled by imagesOf) and never pass through here.
+const DATA_URL_REGEX = /data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/g
+function stripDataUrls(text: string): string {
+  return text.replace(DATA_URL_REGEX, '[inline image omitted]')
+}
+
 /** Options for {@link composeQueryInput}. */
 export interface ComposeOptions {
   /**
@@ -242,7 +253,7 @@ export function composeQueryInput(messages: OpenAIChatMessage[], options: Compos
     }
 
     if (message.role === 'tool') {
-      const text = textOf(message.content)
+      const text = stripDataUrls(textOf(message.content))
       // Keep the current round's result whole — the model needs the data it
       // just requested; clip only replayed history to curb token growth.
       const resultText = inCurrentRound ? text : clip(text, MAX_TOOL_RESULT_CHARS)
@@ -325,7 +336,7 @@ export function composeCurrentRound(messages: OpenAIChatMessage[]): PromptBlock[
     else if (message.role === 'tool') {
       // Tool continuations take the fresh path, so this is defensive: keep the
       // round faithful if a tool result ever reaches the resume path.
-      const text = textOf(message.content)
+      const text = stripDataUrls(textOf(message.content))
       images.push(...imagesOf(message.content))
       const label = message.name ? `Tool ${message.name}` : 'Tool'
       textParts.push(`[${label} returned]: ${text}`)

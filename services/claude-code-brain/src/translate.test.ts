@@ -97,6 +97,36 @@ describe('composeQueryInput', () => {
     })
   })
 
+  it('strips a base64 data URL embedded in tool-result JSON text (e.g. image_journal)', () => {
+    // image_journal returns its result as a JSON string that carries the
+    // generated image's full data URL for the chat UI. The model cannot use a
+    // base64 blob as text and it is tens of thousands of tokens, so it must not
+    // reach the transcript. Only the data URL is removed; the rest is kept.
+    const dataUrl = `data:image/png;base64,${TINY_PNG}`
+    const { blocks } = composeQueryInput([
+      { role: 'user', content: '画一张画' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'image_journal', arguments: '{}' } }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_1',
+        name: 'image_journal',
+        content: JSON.stringify({ message: 'Image created.', entryId: 'e1', imageUrl: dataUrl, title: '晚霞' }),
+      },
+    ])
+
+    const prompt = textBlockOf(blocks)
+    expect(prompt).not.toContain(TINY_PNG)
+    expect(prompt).toContain('[inline image omitted]')
+    expect(prompt).toContain('晚霞')
+    expect(prompt).toContain('Image created.')
+    // The base64 was in JSON text, not an image_url content part, so no image block is attached.
+    expect(blocks.every(block => block.type === 'text')).toBe(true)
+  })
+
   it('omits stale screenshots from earlier rounds but notes them in the transcript', () => {
     const { blocks } = composeQueryInput([
       { role: 'user', content: '看看屏幕' },
