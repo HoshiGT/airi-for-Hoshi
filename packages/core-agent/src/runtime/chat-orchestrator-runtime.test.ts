@@ -275,6 +275,47 @@ describe('createChatOrchestratorRuntime', () => {
     })
   })
 
+  it('turns STICKER specials into persisted sticker slices and keeps them out of the text', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '嘿嘿,当然可以~' })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '<|STICKER_开心猫猫|>' })
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '马上就来!' })
+      await options?.onStreamEvent?.({ type: 'finish', finishReason: 'stop' })
+    })
+
+    await harness.runtime.ingest('可以陪我玩吗', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    const assistantMessage = harness.sessionMessages['session-1'].at(-1) as StreamingAssistantMessage
+    expect(assistantMessage.role).toBe('assistant')
+    expect(assistantMessage.content).toBe('嘿嘿,当然可以~马上就来!')
+    expect(assistantMessage.slices).toEqual([
+      { type: 'text', text: '嘿嘿,当然可以~' },
+      { type: 'sticker', name: '开心猫猫' },
+      { type: 'text', text: '马上就来!' },
+    ])
+  })
+
+  it('leaves EMOTE specials out of message slices', async () => {
+    const harness = createHarness()
+    harness.stream.mockImplementationOnce(async (_model, _chatProvider, _messages, options) => {
+      await options?.onStreamEvent?.({ type: 'text-delta', text: '哼!<|EMOTE_ANGRY|>不理你了' })
+      await options?.onStreamEvent?.({ type: 'finish', finishReason: 'stop' })
+    })
+
+    await harness.runtime.ingest('逗你的啦', {
+      model: 'gpt-test',
+      chatProvider: provider,
+    })
+
+    const assistantMessage = harness.sessionMessages['session-1'].at(-1) as StreamingAssistantMessage
+    expect(assistantMessage.slices.every(slice => slice.type !== 'sticker')).toBe(true)
+    expect(assistantMessage.content).toBe('哼!不理你了')
+  })
+
   /**
    * @example
    * deps.getSystemPromptSupplement() returns tool guidance.

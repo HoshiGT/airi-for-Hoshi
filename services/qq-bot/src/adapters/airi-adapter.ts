@@ -97,7 +97,11 @@ export class QQAdapter {
     this.airiClient.onEvent('output:gen-ai:chat:message', async (event) => {
       try {
         const message = (event.data as { message?: { content?: string } }).message
-        if (!message?.content)
+        // Stage resolves sticker markers into image data URLs before emitting;
+        // entries here are already filtered to stickers that exist in the
+        // library, so this side only needs to re-encode for OneBot.
+        const stickers = (event.data as { stickers?: Array<{ name: string, dataUrl: string }> }).stickers ?? []
+        if (!message?.content && stickers.length === 0)
           return
 
         const genAiOutput = (event.data as Record<string, unknown>)['gen-ai:chat'] as {
@@ -107,7 +111,10 @@ export class QQAdapter {
         if (!onebotCtx)
           return
 
-        this.sendToQQ(onebotCtx, message.content)
+        if (message?.content)
+          this.sendToQQ(onebotCtx, message.content)
+        for (const sticker of stickers)
+          this.sendStickerToQQ(onebotCtx, sticker)
       }
       catch (error) {
         log.withError(error as Error).error('Failed to send response to QQ')
@@ -130,6 +137,24 @@ export class QQAdapter {
       else {
         this.callApi('send_private_msg', { user_id: ctx.userId, message: chunk })
       }
+    }
+  }
+
+  /**
+   * 把表情包作为独立的图片消息发出去(跟在文本消息后面)。
+   * OneBot 的 image 段接受 `base64://<纯base64>`,所以要剥掉 data URL 头。
+   */
+  private sendStickerToQQ(ctx: OneBot, sticker: { name: string, dataUrl: string }): void {
+    const base64 = sticker.dataUrl.replace(/^data:[^,]*,/, '')
+    if (!base64)
+      return
+
+    const segment = [{ type: 'image', data: { file: `base64://${base64}`, summary: `[${sticker.name}]` } }]
+    if (ctx.groupId) {
+      this.callApi('send_group_msg', { group_id: ctx.groupId, message: segment })
+    }
+    else {
+      this.callApi('send_private_msg', { user_id: ctx.userId, message: segment })
     }
   }
 

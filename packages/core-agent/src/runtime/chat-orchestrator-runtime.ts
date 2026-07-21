@@ -10,6 +10,7 @@ import { createQueue } from '@proj-airi/stream-kit'
 
 import { formatContextPromptText } from '../messages/context-prompt'
 import { formatTimePrefix } from '../messages/datetime-prefix'
+import { parseStickerMarker } from '../messages/sticker-marker'
 import { createChatHooks } from './agent-hooks'
 import { useLlmmarkerParser } from './llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from './response-categoriser'
@@ -584,6 +585,20 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         onSpecial: async (special) => {
           if (shouldAbort())
             return
+
+          // Sticker markers become part of the persisted message (a `sticker`
+          // slice rendered inline in chat and forwarded to messaging bridges),
+          // unlike EMOTE/ACT specials which are transient side-channel signals
+          // consumed by hooks only. The special is still emitted to hooks below
+          // so stream observers see every marker uniformly.
+          const stickerName = parseStickerMarker(special)
+          if (stickerName) {
+            buildingMessage.slices.push({
+              type: 'sticker',
+              name: stickerName,
+            })
+            patchForegroundStream(sessionId, buildingMessage)
+          }
 
           await hooks.emitTokenSpecialHooks(special, streamingMessageContext)
         },

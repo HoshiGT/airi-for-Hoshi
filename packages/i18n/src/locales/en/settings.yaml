@@ -717,6 +717,8 @@ pages:
         description: The model used to summarize older conversation into memory and classify it as long- or short-term. Choose it independently from your core model.
       cadence:
         title: Consolidation Cadence
+        auto-label: Automatic consolidation
+        auto-desc: Automatically summarize and trim older rounds once the conversation reaches the trigger count. When off, only the manual consolidation below runs and chat history is never auto-trimmed.
         trigger-label: Trigger after rounds
         trigger-desc: Start a consolidation pass once the conversation reaches this many rounds.
         retain-label: Keep recent rounds
@@ -751,6 +753,7 @@ pages:
         empty: No memories yet. They appear here after the first consolidation pass.
         importance: Importance
         refresh: Refresh
+        delete: Delete this memory
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
@@ -827,6 +830,15 @@ pages:
     vision:
       description: Vision
       title: Vision
+      capture:
+        title: Vision capture cadence
+        description: Tune how frequently the vision ticker captures a frame.
+        enable:
+          label: Enable periodic capture
+          description: When disabled, the vision ticker will not capture frames automatically, saving token usage. You can still use vision through manual tools.
+        interval:
+          label: Capture interval
+          description: Lower values capture more frequently and may increase resource use.
     desktop-control:
       title: Desktop control
       description: Let AIRI see your screen and move the mouse and keyboard
@@ -873,6 +885,19 @@ pages:
       api-key-description: Web search is powered by Tavily. Get a free API key at tavily.com.
       api-key-placeholder: Enter your Tavily API key
       configured: Web search is ready to use!
+    stickers:
+      title: Stickers
+      description: Give AIRI a sticker library she can send in chat
+      enable: Enable stickers
+      enable-description: Allow AIRI to send stickers from the library during chat
+      vision-ready: A vision model is configured — new stickers will be named and described automatically.
+      vision-missing: No vision model configured (Settings → Modules → Vision). New stickers will be named after their file name; you can edit names and descriptions manually.
+      upload: Upload stickers
+      uploading: Tagging…
+      empty: No stickers yet. Upload a few images to get started.
+      name-placeholder: Name (what AIRI writes in the marker)
+      description-placeholder: When should this sticker be used?
+      delete: Remove
     mcp-server:
       title: MCP servers
       description: Configure MCP servers and bring their tools into AIRI.

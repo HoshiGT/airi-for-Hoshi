@@ -17,6 +17,7 @@ import { useHearingStore } from '../stores/modules/hearing'
 import { useMemoryStore } from '../stores/modules/memory'
 import { useQQStore } from '../stores/modules/messaging-qq'
 import { useSpeechStore } from '../stores/modules/speech'
+import { useStickersStore } from '../stores/modules/stickers'
 import { useTwitterStore } from '../stores/modules/twitter'
 import { useVisionStore } from '../stores/modules/vision'
 import { useWebSearchStore } from '../stores/modules/web-search'
@@ -45,6 +46,7 @@ export function useModulesList() {
   const qqStore = useQQStore()
   const twitterStore = useTwitterStore()
   const webSearchStore = useWebSearchStore()
+  const stickersStore = useStickersStore()
   const minecraftStore = useMinecraftStore()
   const factorioStore = useFactorioStore()
   const chessStore = useChessStore()
@@ -99,6 +101,15 @@ export function useModulesList() {
       icon: 'i-solar:magnifer-bold-duotone',
       to: '/settings/modules/web-search',
       configured: webSearchStore.configured,
+      category: 'essential',
+    },
+    {
+      id: 'stickers',
+      name: t('settings.pages.modules.stickers.title'),
+      description: t('settings.pages.modules.stickers.description'),
+      icon: 'i-solar:sticker-smile-circle-2-bold-duotone',
+      to: '/settings/modules/stickers',
+      configured: stickersStore.configured,
       category: 'essential',
     },
     {

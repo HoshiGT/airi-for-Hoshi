@@ -18,7 +18,20 @@ export interface ChatSlicesToolCallResult {
   result?: string | CommonContentPart[]
 }
 
-export type ChatSlices = ChatSlicesText | ChatSlicesToolCall | ChatSlicesToolCallResult
+/**
+ * A sticker the model chose to send inline via a `<|STICKER_名字|>` marker.
+ *
+ * Only the sticker's display name is persisted — the image bytes live in the
+ * renderer's sticker library (stage-ui sticker store) and are resolved at
+ * render/delivery time, so chat history stays small and stickers can be
+ * re-labeled or deleted without rewriting old messages.
+ */
+export interface ChatSlicesSticker {
+  type: 'sticker'
+  name: string
+}
+
+export type ChatSlices = ChatSlicesText | ChatSlicesToolCall | ChatSlicesToolCallResult | ChatSlicesSticker
 
 export interface ChatAssistantMessage extends AssistantMessage {
   slices: ChatSlices[]

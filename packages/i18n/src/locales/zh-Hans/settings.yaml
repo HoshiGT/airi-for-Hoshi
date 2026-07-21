@@ -684,6 +684,8 @@ pages:
         description: 用于把较早的对话总结成记忆、并判定为长期或短期的模型。可独立于核心模型单独选择。
       cadence:
         title: 整理节奏
+        auto-label: 自动整理
+        auto-desc: 对话达到触发轮数时自动总结并裁剪较早的对话。关闭后只保留下方的手动整理，聊天记录不会被自动裁剪。
         trigger-label: 触发轮数
         trigger-desc: 对话达到该轮数时启动一次整理。
         retain-label: 保留最近轮数
@@ -718,6 +720,7 @@ pages:
         empty: 暂无记忆。首次整理后会显示在这里。
         importance: 重要性
         refresh: 刷新
+        delete: 删除这条记忆
     messaging-discord:
       description: Discord 发消息和语音聊天
       title: Discord
@@ -791,6 +794,15 @@ pages:
     vision:
       description: 视觉
       title: 视觉
+      capture:
+        title: 视觉截图频率
+        description: 调整视觉定时器截取画面的频率。
+        enable:
+          label: 启用定时截图
+          description: 关闭后视觉定时器不会自动截取画面，节省 Token 用量。你仍然可以通过手动工具使用视觉能力。
+        interval:
+          label: 截图间隔
+          description: 值越小截取越频繁，资源消耗也越高。
     desktop-control:
       title: 桌面控制
       description: 让 AIRI 看到你的屏幕并操作鼠标和键盘
@@ -837,6 +849,19 @@ pages:
       api-key-description: 网络搜索由 Tavily 提供支持，可在 tavily.com 免费获取 API 密钥。
       api-key-placeholder: 输入您的 Tavily API 密钥
       configured: 网络搜索已就绪！
+    stickers:
+      title: 表情包
+      description: 给 AIRI 一个表情包仓库，聊天时她会自己挑着发
+      enable: 启用表情包
+      enable-description: 允许 AIRI 在聊天中发送仓库里的表情包
+      vision-ready: 已配置视觉模型——新上传的表情包会自动命名和写描述。
+      vision-missing: 未配置视觉模型（设置 → 模块 → 视觉）。新表情包将以文件名命名，你可以手动编辑名字和描述。
+      upload: 上传表情包
+      uploading: 识别中…
+      empty: 还没有表情包，上传几张图片开始吧。
+      name-placeholder: 名字（AIRI 发送时用的标记名）
+      description-placeholder: 什么时候适合用这张表情包？
+      delete: 删除
     mcp-server:
       title: MCP 集成
       description: 配置其他 MCP 服务器并将能力拓展至 AIRI
