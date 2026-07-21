@@ -19,7 +19,15 @@ set -euo pipefail
 
 # All three are overridable via env so the systemd unit (or a manual run) can
 # point at a different install without editing the script.
-SRC="${AIRI_DATA_DIR:-$HOME/.config/ai.moeru.airi}"
+#
+# NOTICE:
+# The dev build (`pnpm dev` / electron-vite dev) stores its Chromium user data
+# under the package name `@proj-airi/stage-tamagotchi`; a packaged/production
+# build would use the electron appId dir `ai.moeru.airi` instead. Day-to-day use
+# here is the dev build, so default to that dir — set AIRI_DATA_DIR to back up a
+# packaged install. (Verified 2026-07-21: the dev dir held the live 193M
+# IndexedDB while ai.moeru.airi was two weeks stale.)
+SRC="${AIRI_DATA_DIR:-$HOME/.config/@proj-airi/stage-tamagotchi}"
 DEST="${AIRI_BACKUP_DIR:-$HOME/airi-backups}"
 RETENTION="${AIRI_BACKUP_KEEP:-14}" # number of newest snapshots to keep
 
