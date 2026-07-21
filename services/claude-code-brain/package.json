@@ -1,0 +1,22 @@
+{
+  "name": "@proj-airi/claude-code-brain",
+  "type": "module",
+  "version": "0.11.2",
+  "private": true,
+  "description": "OpenAI-compatible bridge that serves Claude (via the Claude Agent SDK + Claude subscription auth) as a chat provider for AIRI",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "dev:xwayland": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "catalog:",
+    "@anthropic-ai/sdk": "catalog:",
+    "@guiiai/logg": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "tsx": "catalog:"
+  }
+}
