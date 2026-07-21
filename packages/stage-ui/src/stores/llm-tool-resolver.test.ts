@@ -51,7 +51,6 @@ describe('resolveLlmTools', () => {
 
     const tools = await resolveLlmTools({
       builtInTools: [builtInTool],
-      debugTools: [],
       sparkCommandTools: [],
       webSearchTools: [],
       activeTools: [runtimeTool],
@@ -68,7 +67,6 @@ describe('resolveLlmTools', () => {
 
     const tools = await resolveLlmTools({
       builtInTools: [builtInTool],
-      debugTools: [],
       sparkCommandTools: [],
       webSearchTools: [],
       customTools: [customTool],
@@ -84,7 +82,6 @@ describe('resolveLlmTools', () => {
 
     const tools = await resolveLlmTools({
       builtInTools: [builtInTool],
-      debugTools: [],
       sparkCommandTools: [],
       webSearchTools: [webSearchTool],
       activeTools: [],
@@ -107,7 +104,6 @@ describe('resolveLlmTools', () => {
       // through to the module store instead of the injected source.
       const tools = await resolveLlmTools({
         builtInTools: [builtInTool],
-        debugTools: [],
         sparkCommandTools: [],
         activeTools: [],
       })
@@ -126,7 +122,6 @@ describe('resolveLlmTools', () => {
 
       const tools = await resolveLlmTools({
         builtInTools: [builtInTool],
-        debugTools: [],
         sparkCommandTools: [],
         activeTools: [],
       })

@@ -6,6 +6,7 @@ import { isStageCapacitor, isStageWeb } from '@proj-airi/stage-shared'
 import { computed } from 'vue'
 
 import ChatResponsePart from './response-part.vue'
+import StickerSlice from './sticker-slice.vue'
 import ChatToolCallBlock from './tool-call-block.vue'
 
 import { MarkdownRenderer } from '../../../markdown'
@@ -18,11 +19,19 @@ const props = withDefaults(defineProps<{
   label: string
   yesterdayLabel?: string
   showPlaceholder?: boolean
+  /**
+   * This is the message currently being streamed. Drives the trailing
+   * "still typing" dots after already-streamed content — distinct from
+   * {@link showPlaceholder}, which is the empty-bubble loader before any
+   * content arrives.
+   */
+  generating?: boolean
   variant?: 'desktop' | 'mobile'
   toolCallRenderers?: ChatToolCallRendererRegistry
 }>(), {
   yesterdayLabel: 'Yesterday',
   showPlaceholder: false,
+  generating: false,
   variant: 'desktop',
   toolCallRenderers: () => ({}),
 })
@@ -51,6 +60,12 @@ const resolvedSlices = computed<ChatSlices[]>(() => {
   return []
 })
 
+// Stickers render as their own standalone bubbles (QQ-style), so split them out
+// of the text/tool bubble. Everything else (text, tool calls, tool results)
+// stays in the main bubble.
+const bubbleSlices = computed<ChatSlices[]>(() => resolvedSlices.value.filter(slice => slice.type !== 'sticker'))
+const stickerSlices = computed(() => resolvedSlices.value.filter((slice): slice is Extract<ChatSlices, { type: 'sticker' }> => slice.type === 'sticker'))
+
 const toolResultById = computed(() => {
   return createToolCallResultLookup(resolvedSlices.value, props.message.tool_results)
 })
@@ -75,7 +90,12 @@ function getToolCallRenderer(slice: ChatSlices) {
   return props.toolCallRenderers[slice.toolCall.toolName] ?? ChatToolCallBlock
 }
 
+// Empty-bubble loader: nothing has streamed yet. Once any content arrives the
+// trailing `generating` dots take over instead.
 const showLoader = computed(() => props.showPlaceholder && resolvedSlices.value.length === 0)
+// The text/tool bubble is shown only when it has content or is loading — a
+// sticker-only message renders just the standalone sticker, no empty bubble.
+const showBubble = computed(() => bubbleSlices.value.length > 0 || showLoader.value)
 const containerClass = computed(() => props.variant === 'mobile' ? 'mr-0' : 'mr-12')
 const boxClasses = computed(() => [
   props.variant === 'mobile' ? 'px-2 py-2 text-sm bg-primary-50/90 dark:bg-primary-950/90' : 'px-3 py-3 bg-primary-50/80 dark:bg-primary-950/80',
@@ -85,8 +105,9 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
 </script>
 
 <template>
-  <div flex :class="containerClass" class="ph-no-capture">
+  <div flex="~ col" gap-2 :class="containerClass" class="ph-no-capture">
     <ChatActionMenu
+      v-if="showBubble"
       :copy-text="copyText"
       :can-delete="!showPlaceholder"
       @copy="emit('copy')"
@@ -111,8 +132,8 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
             <span text-sm text="black/60 dark:white/65" font-normal>{{ label }}</span>
             <span v-if="timeText" text-xs text="black/35 dark:white/40" font-normal>{{ timeText }}</span>
           </div>
-          <div v-if="resolvedSlices.length > 0" class="flex flex-col gap-2 break-words" text="primary-700 dark:primary-100">
-            <template v-for="(slice, sliceIndex) in resolvedSlices" :key="sliceIndex">
+          <div v-if="bubbleSlices.length > 0" class="flex flex-col gap-2 break-words" text="primary-700 dark:primary-100">
+            <template v-for="(slice, sliceIndex) in bubbleSlices" :key="sliceIndex">
               <component
                 :is="getToolCallRenderer(slice)"
                 v-if="slice.type === 'tool-call'"
@@ -128,10 +149,19 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
                 <MarkdownRenderer :content="slice.text" />
               </template>
             </template>
+            <!-- Trailing "still typing" dots while this message keeps streaming. -->
+            <div v-if="generating" class="self-start opacity-60" i-eos-icons:three-dots-loading />
           </div>
           <div v-else-if="showLoader" i-eos-icons:three-dots-loading />
         </div>
       </template>
     </ChatActionMenu>
+
+    <!-- Stickers stand on their own, image-only, like a QQ sticker message. -->
+    <StickerSlice
+      v-for="(slice, stickerIndex) in stickerSlices"
+      :key="`sticker-${stickerIndex}`"
+      :name="slice.name"
+    />
   </div>
 </template>

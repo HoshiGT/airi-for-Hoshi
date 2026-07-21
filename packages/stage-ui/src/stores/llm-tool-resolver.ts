@@ -4,7 +4,7 @@ import type { Tool } from '@xsai/shared-chat'
 
 import { uniqBy } from 'es-toolkit'
 
-import { createSparkCommandTool, createWebSearchTools, debug, mcp } from '../tools'
+import { createSparkCommandTool, createWebSearchTools, mcp } from '../tools'
 import { useLlmToolsStore } from './llm-tools'
 import { useModsServerChannelStore } from './mods/api/channel-server'
 import { useWebSearchStore } from './modules/web-search'
@@ -24,12 +24,6 @@ export interface ResolveLlmToolsOptions {
    * @default mcp()
    */
   builtInTools?: ToolSource
-  /**
-   * Debug tools exposed to the LLM.
-   *
-   * @default debug()
-   */
-  debugTools?: ToolSource
   /**
    * Spark command tools. Supplying this also avoids creating the mods server
    * channel store.
@@ -142,13 +136,11 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
   const activeTools = await resolveActiveTools(options.activeTools)
   const [
     builtInTools,
-    debugTools,
     sparkCommandTools,
     webSearchTools,
     customTools,
   ] = await Promise.all([
     resolveToolSource(options.builtInTools ?? mcp),
-    resolveToolSource(options.debugTools ?? debug),
     resolveSparkCommandTools(options.sparkCommandTools),
     resolveWebSearchTools(options.webSearchTools),
     resolveCustomTools(options.customTools),
@@ -157,7 +149,6 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
   return uniqBy(
     [
       ...builtInTools,
-      ...debugTools,
       ...sparkCommandTools,
       ...webSearchTools,
       ...customTools,

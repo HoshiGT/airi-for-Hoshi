@@ -143,6 +143,7 @@ function emitToolCallRerun(
           :label="labels.assistant"
           :yesterday-label="labels.yesterday"
           :show-placeholder="shouldShowPlaceholder(message) && showStreamingPlaceholder"
+          :generating="sending && shouldShowPlaceholder(message)"
           :variant="variant"
           :tool-call-renderers="toolCallRenderers"
           @copy="emitCopyMessage(message, index)"
