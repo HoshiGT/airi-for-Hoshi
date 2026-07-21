@@ -85,6 +85,24 @@ describe('memoryRepository', () => {
     expect(archives[0].rawMessages).toEqual([{ role: 'user', content: 'hi' }])
   })
 
+  it('patches a memory in place and leaves an empty patch untouched', async () => {
+    await repository.addMemoryItems([
+      { id: 'm', sessionId: 's1', kind: 'short', content: 'orig', importance: 0.3, keywords: ['orig'] },
+    ])
+
+    await repository.updateMemoryItem('m', { content: 'corrected', kind: 'long', importance: 0.9, keywords: ['corrected'] })
+    const [after] = await repository.listMemoryItems()
+    expect(after.content).toBe('corrected')
+    expect(after.kind).toBe('long')
+    expect(after.importance).toBe(0.9)
+    expect(after.keywords).toEqual(['corrected'])
+
+    // Empty patch is a no-op (drizzle rejects `.set({})`), so the row is unchanged.
+    await repository.updateMemoryItem('m', {})
+    const [unchanged] = await repository.listMemoryItems()
+    expect(unchanged.content).toBe('corrected')
+  })
+
   it('removes memory items and archived summaries by id', async () => {
     await repository.addMemoryItems([
       { id: 'keep', sessionId: 's1', kind: 'long', content: 'stays', importance: 0.5, keywords: [] },

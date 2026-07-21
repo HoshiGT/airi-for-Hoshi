@@ -173,6 +173,88 @@ async function removeItem(id: string) {
   items.value = items.value.filter(item => item.id !== id)
 }
 
+// Recall tags are free text: split on commas (ASCII/fullwidth) and whitespace.
+// The store normalizes (lowercase/dedupe); an empty result stores no tags and
+// recall falls back to matching the content itself.
+function parseKeywords(input: string): string[] {
+  return input.split(/[,，\s]+/).map(keyword => keyword.trim()).filter(Boolean)
+}
+
+// Manual add: consolidation can be off or wrong, so let the user write a memory
+// directly. Defaults mirror a neutral long-term fact of middling weight.
+const adding = ref(false)
+const savingEntry = ref(false)
+const draftContent = ref('')
+const draftKind = ref<MemoryKind>('long')
+const draftImportance = ref(0.5)
+const draftKeywords = ref('')
+
+function startAdd() {
+  draftContent.value = ''
+  draftKind.value = 'long'
+  draftImportance.value = 0.5
+  draftKeywords.value = ''
+  adding.value = true
+}
+
+async function saveAdd() {
+  const content = draftContent.value.trim()
+  if (!content || savingEntry.value)
+    return
+  savingEntry.value = true
+  try {
+    await memoryService.addMemory({
+      characterId: cardStore.activeCardId || 'default',
+      content,
+      kind: draftKind.value,
+      importance: draftImportance.value,
+      keywords: parseKeywords(draftKeywords.value),
+    })
+    adding.value = false
+    await refresh()
+  }
+  finally {
+    savingEntry.value = false
+  }
+}
+
+// Inline edit: manual review/correction of a single stored memory.
+const editingId = ref<string | null>(null)
+const editContent = ref('')
+const editKind = ref<MemoryKind>('long')
+const editImportance = ref(0.5)
+const editKeywords = ref('')
+
+function startEdit(item: MemoryItemRow) {
+  editingId.value = item.id
+  editContent.value = item.content
+  editKind.value = item.kind === 'short' ? 'short' : 'long'
+  editImportance.value = item.importance
+  // Pre-fill the curated tags as space-joined text; editing content no longer
+  // clobbers them, so a fix keeps its recall tags unless the user changes them.
+  editKeywords.value = item.keywords.join(' ')
+}
+
+async function saveEdit(id: string) {
+  const content = editContent.value.trim()
+  if (!content || savingEntry.value)
+    return
+  savingEntry.value = true
+  try {
+    await memoryService.updateMemory(id, {
+      content,
+      kind: editKind.value,
+      importance: editImportance.value,
+      keywords: parseKeywords(editKeywords.value),
+    })
+    editingId.value = null
+    await refresh()
+  }
+  finally {
+    savingEntry.value = false
+  }
+}
+
 watch(kindFilter, refresh)
 
 onMounted(async () => {
@@ -405,6 +487,80 @@ onMounted(async () => {
           >
             <div i-solar:refresh-line-duotone :class="['text-base', loading ? 'animate-spin' : '']" />
           </button>
+          <button
+            type="button"
+            :class="['rounded p-2', 'text-primary-500 dark:text-primary-300', 'hover:bg-primary-100 dark:hover:bg-primary-900/40']"
+            :title="t('settings.pages.modules.memory.editor.add-button')"
+            @click="startAdd"
+          >
+            <div i-solar:add-circle-bold-duotone :class="['text-base']" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Manual add form: write a memory the consolidation missed or got wrong -->
+      <div
+        v-if="adding"
+        :class="['rounded-lg p-3', 'bg-white dark:bg-neutral-900/40', 'flex flex-col gap-3', 'border border-primary-200 dark:border-primary-900/50']"
+      >
+        <textarea
+          v-model="draftContent"
+          rows="2"
+          :placeholder="t('settings.pages.modules.memory.editor.content-placeholder')"
+          :class="['w-full resize-y rounded px-3 py-2 text-sm', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+        />
+        <input
+          v-model="draftKeywords"
+          type="text"
+          :placeholder="t('settings.pages.modules.memory.editor.keywords-placeholder')"
+          :class="['w-full rounded px-3 py-2 text-sm', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+        >
+        <div :class="['flex flex-wrap items-center gap-3']">
+          <div :class="['flex items-center gap-1']">
+            <button
+              v-for="kind in (['long', 'short'] as const)"
+              :key="kind"
+              type="button"
+              :class="[
+                'rounded-full px-3 py-1 text-xs',
+                draftKind === kind
+                  ? 'bg-primary-500 text-white dark:bg-primary-600'
+                  : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700',
+              ]"
+              @click="draftKind = kind"
+            >
+              {{ t(`settings.pages.modules.memory.kinds.${kind}`) }}
+            </button>
+          </div>
+          <label :class="['flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400']">
+            {{ t('settings.pages.modules.memory.editor.importance-label') }}
+            <input
+              v-model.number="draftImportance"
+              type="number" min="0" max="1" step="0.1"
+              :class="['w-16 rounded px-2 py-1', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+            >
+          </label>
+          <div :class="['ml-auto flex items-center gap-2']">
+            <button
+              type="button"
+              :class="['rounded-lg px-3 py-1.5 text-sm', 'text-neutral-600 hover:bg-neutral-200 dark:text-neutral-300 dark:hover:bg-neutral-700']"
+              @click="adding = false"
+            >
+              {{ t('settings.pages.modules.memory.editor.cancel') }}
+            </button>
+            <button
+              type="button"
+              :disabled="!draftContent.trim() || savingEntry"
+              :class="[
+                'rounded-lg px-3 py-1.5 text-sm',
+                'bg-primary-500 text-white hover:bg-primary-600 dark:bg-primary-600 dark:hover:bg-primary-500',
+                'disabled:cursor-not-allowed disabled:opacity-60',
+              ]"
+              @click="saveAdd"
+            >
+              {{ t('settings.pages.modules.memory.editor.save') }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -420,42 +576,122 @@ onMounted(async () => {
           :key="item.id"
           :class="['rounded-lg p-3', 'bg-white dark:bg-neutral-900/40', 'flex flex-col gap-2']"
         >
-          <div :class="['flex items-start justify-between gap-2']">
-            <div :class="['text-sm text-neutral-700 dark:text-neutral-200']">
-              {{ item.content }}
+          <!-- Inline edit: manual review/correction of one memory -->
+          <template v-if="editingId === item.id">
+            <textarea
+              v-model="editContent"
+              rows="2"
+              :class="['w-full resize-y rounded px-3 py-2 text-sm', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+            />
+            <input
+              v-model="editKeywords"
+              type="text"
+              :placeholder="t('settings.pages.modules.memory.editor.keywords-placeholder')"
+              :class="['w-full rounded px-3 py-2 text-sm', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+            >
+            <div :class="['flex flex-wrap items-center gap-3']">
+              <div :class="['flex items-center gap-1']">
+                <button
+                  v-for="kind in (['long', 'short'] as const)"
+                  :key="kind"
+                  type="button"
+                  :class="[
+                    'rounded-full px-3 py-1 text-xs',
+                    editKind === kind
+                      ? 'bg-primary-500 text-white dark:bg-primary-600'
+                      : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700',
+                  ]"
+                  @click="editKind = kind"
+                >
+                  {{ t(`settings.pages.modules.memory.kinds.${kind}`) }}
+                </button>
+              </div>
+              <label :class="['flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400']">
+                {{ t('settings.pages.modules.memory.editor.importance-label') }}
+                <input
+                  v-model.number="editImportance"
+                  type="number" min="0" max="1" step="0.1"
+                  :class="['w-16 rounded px-2 py-1', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
+                >
+              </label>
+              <div :class="['ml-auto flex items-center gap-2']">
+                <button
+                  type="button"
+                  :class="['rounded-lg px-3 py-1.5 text-sm', 'text-neutral-600 hover:bg-neutral-200 dark:text-neutral-300 dark:hover:bg-neutral-700']"
+                  @click="editingId = null"
+                >
+                  {{ t('settings.pages.modules.memory.editor.cancel') }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="!editContent.trim() || savingEntry"
+                  :class="[
+                    'rounded-lg px-3 py-1.5 text-sm',
+                    'bg-primary-500 text-white hover:bg-primary-600 dark:bg-primary-600 dark:hover:bg-primary-500',
+                    'disabled:cursor-not-allowed disabled:opacity-60',
+                  ]"
+                  @click="saveEdit(item.id)"
+                >
+                  {{ t('settings.pages.modules.memory.editor.save') }}
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              :class="[
-                'shrink-0 rounded p-1',
-                'text-neutral-400 hover:text-red-500',
-                'dark:text-neutral-500 dark:hover:text-red-400',
-                'transition-colors',
-              ]"
-              :title="t('settings.pages.modules.memory.list.delete')"
-              @click="removeItem(item.id)"
-            >
-              <div :class="['text-sm i-solar:trash-bin-trash-bold-duotone']" />
-            </button>
-          </div>
-          <div :class="['flex flex-wrap items-center gap-2', 'text-xs text-neutral-400 dark:text-neutral-500']">
-            <span
-              :class="[
-                'rounded px-2 py-0.5',
-                item.kind === 'long'
-                  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
-                  : 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
-              ]"
-            >
-              {{ t(`settings.pages.modules.memory.kinds.${item.kind === 'long' ? 'long' : 'short'}`) }}
-            </span>
-            <span :class="['rounded bg-primary-100 px-2 py-0.5 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300']">
-              {{ t('settings.pages.modules.memory.list.importance') }} {{ item.importance.toFixed(2) }}
-            </span>
-            <span v-for="kw in item.keywords" :key="kw" :class="['rounded bg-neutral-100 px-2 py-0.5 dark:bg-neutral-800']">
-              {{ kw }}
-            </span>
-          </div>
+          </template>
+
+          <!-- Display -->
+          <template v-else>
+            <div :class="['flex items-start justify-between gap-2']">
+              <div :class="['text-sm text-neutral-700 dark:text-neutral-200']">
+                {{ item.content }}
+              </div>
+              <div :class="['flex shrink-0 items-center gap-0.5']">
+                <button
+                  type="button"
+                  :class="[
+                    'rounded p-1',
+                    'text-neutral-400 hover:text-primary-500',
+                    'dark:text-neutral-500 dark:hover:text-primary-400',
+                    'transition-colors',
+                  ]"
+                  :title="t('settings.pages.modules.memory.editor.edit')"
+                  @click="startEdit(item)"
+                >
+                  <div :class="['text-sm i-solar:pen-2-bold-duotone']" />
+                </button>
+                <button
+                  type="button"
+                  :class="[
+                    'rounded p-1',
+                    'text-neutral-400 hover:text-red-500',
+                    'dark:text-neutral-500 dark:hover:text-red-400',
+                    'transition-colors',
+                  ]"
+                  :title="t('settings.pages.modules.memory.list.delete')"
+                  @click="removeItem(item.id)"
+                >
+                  <div :class="['text-sm i-solar:trash-bin-trash-bold-duotone']" />
+                </button>
+              </div>
+            </div>
+            <div :class="['flex flex-wrap items-center gap-2', 'text-xs text-neutral-400 dark:text-neutral-500']">
+              <span
+                :class="[
+                  'rounded px-2 py-0.5',
+                  item.kind === 'long'
+                    ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+                    : 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
+                ]"
+              >
+                {{ t(`settings.pages.modules.memory.kinds.${item.kind === 'long' ? 'long' : 'short'}`) }}
+              </span>
+              <span :class="['rounded bg-primary-100 px-2 py-0.5 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300']">
+                {{ t('settings.pages.modules.memory.list.importance') }} {{ item.importance.toFixed(2) }}
+              </span>
+              <span v-for="kw in item.keywords" :key="kw" :class="['rounded bg-neutral-100 px-2 py-0.5 dark:bg-neutral-800']">
+                {{ kw }}
+              </span>
+            </div>
+          </template>
         </li>
       </ul>
     </div>

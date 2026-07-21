@@ -3,7 +3,7 @@ import type { Message } from '@xsai/shared-chat'
 
 import type { ConsolidationOutput } from './consolidation'
 import type { MemoryExport, MemoryKind, RankedMemory, RetrieveOptions } from './repository'
-import type { ConsolidationRunRow } from './schema'
+import type { ConsolidationRunRow, MemoryItemRow, NewMemoryItem } from './schema'
 
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
@@ -14,6 +14,20 @@ import { useProvidersStore } from '../../providers'
 import { runConsolidation } from './consolidation'
 import { useMemoryDb } from './db'
 import { LocalKeywordRetriever, MemoryRepository } from './repository'
+
+/**
+ * Normalizes user-supplied recall tags to match the consolidation model's
+ * format (lowercased topic words), deduped and stripped of blanks.
+ *
+ * Before:
+ * - ["QQ", " qq ", "表情包", ""]
+ *
+ * After:
+ * - ["qq", "表情包"]
+ */
+function normalizeKeywords(keywords: string[]): string[] {
+  return [...new Set(keywords.map(keyword => keyword.trim().toLowerCase()).filter(Boolean))]
+}
 
 export type { ConsolidationOutput } from './consolidation'
 export type { MemoryExport, MemoryKind, RankedMemory } from './repository'
@@ -171,6 +185,53 @@ export const useMemoryService = defineStore('memory-service', () => {
     await (await repository()).removeMemoryItems([id])
   }
 
+  /**
+   * Add a memory the user wrote or salvaged in the settings UI, for reviewing
+   * consolidation output. Recall tags are user-supplied (normalized to the
+   * model's lowercased-topic format); left empty, recall falls back to matching
+   * the content itself. Kind/importance default to a neutral long-term fact.
+   */
+  async function addMemory(input: {
+    characterId: string
+    content: string
+    kind?: MemoryKind
+    importance?: number
+    keywords?: string[]
+    sessionId?: string
+  }): Promise<void> {
+    const item: NewMemoryItem = {
+      id: nanoid(),
+      characterId: input.characterId,
+      // Manual entries aren't distilled from a conversation; a sentinel session
+      // keeps them grouped and clear of session-scoped undo/clear paths.
+      sessionId: input.sessionId ?? 'manual',
+      kind: input.kind ?? 'long',
+      content: input.content,
+      importance: input.importance ?? 0.5,
+      keywords: normalizeKeywords(input.keywords ?? []),
+    }
+    await (await repository()).addMemoryItems([item])
+  }
+
+  /**
+   * Edit a stored memory in place (manual review/correction). Every field is
+   * patched only when provided; `keywords` are the user's edited tags — kept
+   * verbatim (normalized), never re-tokenized, so a curated tag list survives a
+   * content fix instead of exploding into per-character tokens.
+   */
+  async function updateMemory(id: string, patch: { content?: string, kind?: MemoryKind, importance?: number, keywords?: string[] }): Promise<void> {
+    const fields: Partial<Pick<MemoryItemRow, 'content' | 'kind' | 'importance' | 'keywords'>> = {}
+    if (patch.content !== undefined)
+      fields.content = patch.content
+    if (patch.kind !== undefined)
+      fields.kind = patch.kind
+    if (patch.importance !== undefined)
+      fields.importance = patch.importance
+    if (patch.keywords !== undefined)
+      fields.keywords = normalizeKeywords(patch.keywords)
+    await (await repository()).updateMemoryItem(id, fields)
+  }
+
   async function listArchives(sessionId?: string) {
     return (await repository()).listArchivedSummaries(sessionId)
   }
@@ -200,6 +261,8 @@ export const useMemoryService = defineStore('memory-service', () => {
     recall,
     listMemories,
     removeMemory,
+    addMemory,
+    updateMemory,
     listArchives,
     clear,
     exportMemory,

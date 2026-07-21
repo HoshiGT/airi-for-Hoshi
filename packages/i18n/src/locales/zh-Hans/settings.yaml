@@ -721,6 +721,14 @@ pages:
         importance: 重要性
         refresh: 刷新
         delete: 删除这条记忆
+      editor:
+        add-button: 手动添加
+        content-placeholder: 写下想让 Ta 记住的事…
+        keywords-placeholder: 检索标签（空格或逗号分隔，可留空）
+        importance-label: 重要度
+        save: 保存
+        cancel: 取消
+        edit: 编辑这条记忆
     messaging-discord:
       description: Discord 发消息和语音聊天
       title: Discord

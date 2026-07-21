@@ -82,6 +82,18 @@ export class MemoryRepository {
     await this.db.insert(archivedSummaries).values(summary)
   }
 
+  /**
+   * Patch a single memory in place — the manual-review edits from the settings
+   * UI. Callers that change `content` must also pass refreshed `keywords` so the
+   * keyword retriever keeps matching the corrected text. An empty patch is a
+   * no-op (drizzle rejects `.set({})`).
+   */
+  async updateMemoryItem(id: string, patch: Partial<Pick<MemoryItemRow, 'content' | 'kind' | 'importance' | 'keywords'>>): Promise<void> {
+    if (Object.keys(patch).length === 0)
+      return
+    await this.db.update(memoryItems).set(patch).where(eq(memoryItems.id, id))
+  }
+
   async listMemoryItems(filter?: { characterId?: string, sessionId?: string, kind?: MemoryKind }): Promise<MemoryItemRow[]> {
     const conditions = []
     if (filter?.characterId)

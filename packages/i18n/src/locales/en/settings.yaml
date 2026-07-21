@@ -754,6 +754,14 @@ pages:
         importance: Importance
         refresh: Refresh
         delete: Delete this memory
+      editor:
+        add-button: Add memory
+        content-placeholder: Write something to remember…
+        keywords-placeholder: Tags for recall (space or comma separated, optional)
+        importance-label: Importance
+        save: Save
+        cancel: Cancel
+        edit: Edit this memory
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
