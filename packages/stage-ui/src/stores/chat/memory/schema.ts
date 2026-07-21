@@ -13,6 +13,8 @@ import { integer, jsonb, pgTable, real, serial, text, timestamp } from 'drizzle-
 /** A consolidated, classified fact distilled from trimmed conversation rounds. */
 export const memoryItems = pgTable('memory_items', {
   id: text('id').primaryKey(),
+  /** Character card this memory belongs to; scopes recall and listing. */
+  characterId: text('character_id').notNull().default('default'),
   /** Conversation/session this memory was distilled from (e.g. `qq-private-123`). */
   sessionId: text('session_id').notNull(),
   /** Long-term vs short-term bucket, assigned by the summarization model. */
@@ -39,6 +41,8 @@ export const memoryItems = pgTable('memory_items', {
  */
 export const archivedSummaries = pgTable('archived_summaries', {
   id: text('id').primaryKey(),
+  /** Character card this archive belongs to. */
+  characterId: text('character_id').notNull().default('default'),
   sessionId: text('session_id').notNull(),
   /** Narrative summary the model produced for the trimmed rounds. */
   summary: text('summary').notNull(),
@@ -65,6 +69,8 @@ export const consolidationRuns = pgTable('consolidation_runs', {
    * one timestamp tick when passes run back-to-back (e.g. in tests).
    */
   seq: serial('seq').notNull(),
+  /** Character card this run belongs to. */
+  characterId: text('character_id').notNull().default('default'),
   sessionId: text('session_id').notNull(),
   /** The live-session messages (with ids) the pass trimmed, verbatim for restore. */
   archivedMessages: jsonb('archived_messages').$type<unknown[]>().notNull().default([]),

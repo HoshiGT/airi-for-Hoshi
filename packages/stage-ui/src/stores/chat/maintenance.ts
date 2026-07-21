@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 
 import { toProviderHistory, useChatOrchestratorStore } from '../chat'
+import { useAiriCardStore } from '../modules/airi-card'
 import { useMemoryStore } from '../modules/memory'
 import { useChatContextStore } from './context-store'
 import { useMemoryService } from './memory'
@@ -33,6 +34,7 @@ export const useChatMaintenanceStore = defineStore('chat-maintenance', () => {
   const chatStream = useChatStreamStore()
   const chatContext = useChatContextStore()
   const chatOrchestrator = useChatOrchestratorStore()
+  const cardStore = useAiriCardStore()
   const memoryStore = useMemoryStore()
   const memoryService = useMemoryService()
 
@@ -77,7 +79,8 @@ export const useChatMaintenanceStore = defineStore('chat-maintenance', () => {
     if (!plan)
       return { status: 'nothing-to-archive' }
 
-    const output = await memoryService.consolidate(targetSessionId, toProviderHistory(plan.archived), {
+    const characterId = chatSession.sessionMetas[targetSessionId]?.characterId || cardStore.activeCardId || 'default'
+    const output = await memoryService.consolidate(characterId, targetSessionId, toProviderHistory(plan.archived), {
       roundFrom: plan.roundFrom,
       roundTo: plan.roundTo,
       // Undo backup: the raw session items (ids included) about to be trimmed.

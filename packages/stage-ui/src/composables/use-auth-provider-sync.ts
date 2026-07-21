@@ -112,7 +112,7 @@ export function useAuthProviderSync() {
           }
           break
         case 'speech':
-          if (!speechStore.activeSpeechProvider || speechStore.activeSpeechProvider === 'speech-noop') {
+          if (!speechStore.activeSpeechProvider) {
             speechStore.activeSpeechProvider = id
             speechStore.activeSpeechModel = ''
           }

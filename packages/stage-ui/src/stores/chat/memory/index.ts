@@ -86,6 +86,7 @@ export const useMemoryService = defineStore('memory-service', () => {
    * are retained.
    */
   async function consolidate(
+    characterId: string,
     sessionId: string,
     messages: Message[],
     options?: { roundFrom?: number, roundTo?: number, archivedSessionMessages?: unknown[] },
@@ -100,6 +101,7 @@ export const useMemoryService = defineStore('memory-service', () => {
       const record = await runConsolidation({
         provider,
         model: memoryStore.resolvedModel,
+        characterId,
         sessionId,
         messages,
         roundFrom: options?.roundFrom,
@@ -111,6 +113,7 @@ export const useMemoryService = defineStore('memory-service', () => {
       if (options?.archivedSessionMessages) {
         await repo.addConsolidationRun({
           id: nanoid(),
+          characterId,
           sessionId,
           archivedMessages: options.archivedSessionMessages,
           memoryIds: record.memoryIds,
@@ -160,8 +163,12 @@ export const useMemoryService = defineStore('memory-service', () => {
     return (await retriever()).search(query, options)
   }
 
-  async function listMemories(filter?: { sessionId?: string, kind?: MemoryKind }) {
+  async function listMemories(filter?: { characterId?: string, sessionId?: string, kind?: MemoryKind }) {
     return (await repository()).listMemoryItems(filter)
+  }
+
+  async function removeMemory(id: string): Promise<void> {
+    await (await repository()).removeMemoryItems([id])
   }
 
   async function listArchives(sessionId?: string) {
@@ -192,6 +199,7 @@ export const useMemoryService = defineStore('memory-service', () => {
     undoableConsolidationCount,
     recall,
     listMemories,
+    removeMemory,
     listArchives,
     clear,
     exportMemory,

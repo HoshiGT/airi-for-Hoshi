@@ -35,6 +35,7 @@ vi.mock('./stream-store', () => ({
 vi.mock('./session-store', () => ({
   useChatSessionStore: () => ({
     activeSessionId: 'sess-1',
+    sessionMetas: { 'sess-1': { characterId: 'card-1' } },
     initialize: initializeMock,
     loadSession: loadSessionMock,
     getSessionMessages: (sessionId: string) => sessionMessages.get(sessionId) ?? [],
@@ -42,6 +43,10 @@ vi.mock('./session-store', () => ({
     cleanupMessages: vi.fn(),
     notifySessionsRewritten: notifySessionsRewrittenMock,
   }),
+}))
+
+vi.mock('../modules/airi-card', () => ({
+  useAiriCardStore: () => ({ activeCardId: 'card-1' }),
 }))
 
 vi.mock('../modules/memory', () => ({
@@ -128,8 +133,9 @@ describe('chat-maintenance · consolidateSessionNow', () => {
     expect(consolidateMock).toHaveBeenCalledTimes(1)
     // Rounds 1-3 (u0..a2) go to the model; the range is reported for drill-back.
     // (The options also carry archivedSessionMessages — asserted separately.)
-    expect(consolidateMock.mock.calls[0][0]).toBe('sess-1')
-    expect(consolidateMock.mock.calls[0][2]).toMatchObject({ roundFrom: 1, roundTo: 3 })
+    expect(consolidateMock.mock.calls[0][0]).toBe('card-1')
+    expect(consolidateMock.mock.calls[0][1]).toBe('sess-1')
+    expect(consolidateMock.mock.calls[0][3]).toMatchObject({ roundFrom: 1, roundTo: 3 })
 
     // Live history keeps the system head plus the retained 2 rounds.
     const trimmed = sessionMessages.get('sess-1')!
@@ -163,7 +169,7 @@ describe('chat-maintenance · consolidateSessionNow', () => {
 
     // Rounds 1-3 (u0..a2) were archived; the backup must be the session items
     // (ids included), not the provider-shaped history.
-    const options = consolidateMock.mock.calls[0][2]
+    const options = consolidateMock.mock.calls[0][3]
     expect((options.archivedSessionMessages as ChatHistoryItem[]).map(m => m.id))
       .toEqual(['u0', 'a0', 'u1', 'a1', 'u2', 'a2'])
   })

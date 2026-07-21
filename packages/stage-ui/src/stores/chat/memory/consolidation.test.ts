@@ -57,7 +57,7 @@ beforeEach(() => {
 describe('runConsolidation', () => {
   it('keeps the base system prompt when no guidance is set', async () => {
     const repository = await makeRepository()
-    await runConsolidation({ provider, model: 'test-model', sessionId: 's1', messages, repository })
+    await runConsolidation({ provider, model: 'test-model', characterId: 'default', sessionId: 's1', messages, repository })
 
     expect(sentSystemPrompt()).not.toContain('preferences for what to remember')
   })
@@ -67,6 +67,7 @@ describe('runConsolidation', () => {
     await runConsolidation({
       provider,
       model: 'test-model',
+      characterId: 'default',
       sessionId: 's1',
       messages,
       guidance: '重点记录我的猫的习惯，忽略寒暄。',
@@ -82,7 +83,7 @@ describe('runConsolidation', () => {
 
   it('ignores whitespace-only guidance', async () => {
     const repository = await makeRepository()
-    await runConsolidation({ provider, model: 'test-model', sessionId: 's1', messages, guidance: '   \n', repository })
+    await runConsolidation({ provider, model: 'test-model', characterId: 'default', sessionId: 's1', messages, guidance: '   \n', repository })
 
     expect(sentSystemPrompt()).not.toContain('preferences for what to remember')
   })
@@ -92,6 +93,7 @@ describe('runConsolidation', () => {
     const record = await runConsolidation({
       provider,
       model: 'test-model',
+      characterId: 'default',
       sessionId: 's1',
       messages,
       roundFrom: 1,

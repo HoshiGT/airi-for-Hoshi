@@ -27,6 +27,7 @@ const {
   activeProviderModelError,
 } = storeToRefs(visionStore)
 const {
+  captureEnabled,
   captureIntervalMs,
   captureCount,
   contextUpdateCount,
@@ -342,22 +343,30 @@ function formatRelativeTime(timestamp: number | null) {
       <div :class="['flex', 'flex-col', 'gap-4']">
         <div>
           <h2 :class="['text-lg', 'text-neutral-500', 'md:text-2xl', 'dark:text-neutral-400']">
-            Vision capture cadence
+            {{ t('settings.pages.modules.vision.capture.title') }}
           </h2>
           <div :class="['text-neutral-400', 'dark:text-neutral-400']">
-            Tune how frequently the vision ticker captures a frame.
+            {{ t('settings.pages.modules.vision.capture.description') }}
           </div>
         </div>
 
-        <FieldRange
-          v-model="captureIntervalMs"
-          label="Capture interval"
-          description="Lower values capture more frequently and may increase resource use."
-          :min="500"
-          :max="15000"
-          :step="250"
-          :format-value="value => `${(value / 1000).toFixed(2)}s`"
+        <FieldCheckbox
+          v-model="captureEnabled"
+          :label="t('settings.pages.modules.vision.capture.enable.label')"
+          :description="t('settings.pages.modules.vision.capture.enable.description')"
         />
+
+        <template v-if="captureEnabled">
+          <FieldRange
+            v-model="captureIntervalMs"
+            :label="t('settings.pages.modules.vision.capture.interval.label')"
+            :description="t('settings.pages.modules.vision.capture.interval.description')"
+            :min="500"
+            :max="15000"
+            :step="250"
+            :format-value="value => `${(value / 1000).toFixed(2)}s`"
+          />
+        </template>
 
         <div :class="['grid', 'gap-4', 'md:grid-cols-3']">
           <div :class="['rounded-lg', 'border', 'border-neutral-200', 'bg-white', 'p-3', 'dark:border-neutral-800', 'dark:bg-neutral-900']">

@@ -13,12 +13,14 @@ import RadioCardSimple from '../../../menu/radio-card-simple.vue'
 
 import { useChatMaintenanceStore } from '../../../../stores/chat/maintenance'
 import { useMemoryService } from '../../../../stores/chat/memory'
+import { useAiriCardStore } from '../../../../stores/modules/airi-card'
 import { useMemoryStore } from '../../../../stores/modules/memory'
 import { useProvidersStore } from '../../../../stores/providers'
 
 const { t } = useI18n()
 
 const providersStore = useProvidersStore()
+const cardStore = useAiriCardStore()
 const memoryStore = useMemoryStore()
 const memoryService = useMemoryService()
 const maintenanceStore = useChatMaintenanceStore()
@@ -33,6 +35,7 @@ const {
   providerModels,
   triggerRounds,
   retainRounds,
+  autoConsolidationEnabled,
   consolidationPrompt,
 } = storeToRefs(memoryStore)
 
@@ -77,9 +80,11 @@ async function refresh() {
   loading.value = true
   loadError.value = null
   try {
-    items.value = await memoryService.listMemories(
-      kindFilter.value === 'all' ? undefined : { kind: kindFilter.value },
-    )
+    const characterId = cardStore.activeCardId || 'default'
+    const filter: { characterId: string, kind?: 'long' | 'short' } = { characterId }
+    if (kindFilter.value !== 'all')
+      filter.kind = kindFilter.value
+    items.value = await memoryService.listMemories(filter)
   }
   catch (error) {
     // Surface init/query failures instead of leaving an empty list that looks
@@ -162,6 +167,11 @@ watch(activeProvider, async (provider, oldProvider) => {
     activeModel.value = ''
   await memoryStore.loadModelsForProvider(provider)
 }, { immediate: true })
+
+async function removeItem(id: string) {
+  await memoryService.removeMemory(id)
+  items.value = items.value.filter(item => item.id !== id)
+}
 
 watch(kindFilter, refresh)
 
@@ -249,7 +259,18 @@ onMounted(async () => {
           {{ t('settings.pages.modules.memory.cadence.title') }}
         </h2>
       </div>
-      <div :class="['flex flex-col gap-4 md:flex-row']">
+      <label :class="['flex items-start gap-3', 'cursor-pointer select-none']">
+        <input
+          v-model="autoConsolidationEnabled"
+          type="checkbox"
+          :class="['mt-1']"
+        >
+        <span :class="['flex flex-col gap-0.5']">
+          <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.auto-label') }}</span>
+          <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.auto-desc') }}</span>
+        </span>
+      </label>
+      <div v-if="autoConsolidationEnabled" :class="['flex flex-col gap-4 md:flex-row']">
         <label :class="['flex flex-1 flex-col gap-1']">
           <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.trigger-label') }}</span>
           <input
@@ -399,8 +420,23 @@ onMounted(async () => {
           :key="item.id"
           :class="['rounded-lg p-3', 'bg-white dark:bg-neutral-900/40', 'flex flex-col gap-2']"
         >
-          <div :class="['text-sm text-neutral-700 dark:text-neutral-200']">
-            {{ item.content }}
+          <div :class="['flex items-start justify-between gap-2']">
+            <div :class="['text-sm text-neutral-700 dark:text-neutral-200']">
+              {{ item.content }}
+            </div>
+            <button
+              type="button"
+              :class="[
+                'shrink-0 rounded p-1',
+                'text-neutral-400 hover:text-red-500',
+                'dark:text-neutral-500 dark:hover:text-red-400',
+                'transition-colors',
+              ]"
+              :title="t('settings.pages.modules.memory.list.delete')"
+              @click="removeItem(item.id)"
+            >
+              <div :class="['text-sm i-solar:trash-bin-trash-bold-duotone']" />
+            </button>
           </div>
           <div :class="['flex flex-wrap items-center gap-2', 'text-xs text-neutral-400 dark:text-neutral-500']">
             <span

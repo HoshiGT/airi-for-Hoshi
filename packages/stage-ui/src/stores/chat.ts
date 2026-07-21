@@ -32,6 +32,7 @@ import { useAiriCardStore } from './modules/airi-card'
 import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
 import { useMemoryStore } from './modules/memory'
+import { useStickersStore } from './modules/stickers'
 import { useWebSearchStore } from './modules/web-search'
 
 interface ForkOptions {
@@ -66,6 +67,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   // the system prompt is composed, which would expose web_search on the first turn
   // without its paired prompt-injection defense.
   useWebSearchStore()
+  // Same eager-instantiation reasoning as web-search above: the sticker store's
+  // watcher must register the sticker list prompt before the system prompt is
+  // composed, or the model could emit markers with no library behind them.
+  useStickersStore()
   const consciousnessStore = useConsciousnessStore()
   const artistryAutonomousStore = useAutonomousArtistryStore()
   const { activeModel, activeProvider } = storeToRefs(consciousnessStore)
@@ -187,6 +192,11 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   async function maybeConsolidateSession(sessionId: string) {
     if (!memoryStore.configured)
       return
+    // Manual-only mode: the settings-page 整理 button (consolidateSessionNow in
+    // the maintenance store) stays available; only this round-count trigger is
+    // gated off.
+    if (!memoryStore.autoConsolidationEnabled)
+      return
     if (consolidatingSessions.has(sessionId))
       return
 
@@ -202,7 +212,8 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
     consolidatingSessions.add(sessionId)
     try {
-      await memoryService.consolidate(sessionId, toProviderHistory(plan.archived), {
+      const characterId = chatSession.sessionMetas[sessionId]?.characterId || cardStore.activeCardId || 'default'
+      await memoryService.consolidate(characterId, sessionId, toProviderHistory(plan.archived), {
         roundFrom: plan.roundFrom,
         roundTo: plan.roundTo,
         // Undo backup: the raw session items (ids included) about to be trimmed.

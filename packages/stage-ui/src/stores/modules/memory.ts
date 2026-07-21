@@ -34,6 +34,12 @@ export const useMemoryStore = defineStore('memory', () => {
   const triggerRounds = useLocalStorageManualReset<number>('settings/memory/trigger-rounds', 30)
   const retainRounds = useLocalStorageManualReset<number>('settings/memory/retain-rounds', 10)
 
+  // Gates the automatic round-count-triggered consolidation in the chat
+  // orchestrator; the manual 整理 button ignores this. Default off: with
+  // large-context brains there is no pressure to trim live history, and
+  // auto-trimming surprised the user (2026-07-18 request: manual-only).
+  const autoConsolidationEnabled = useLocalStorageManualReset<boolean>('settings/memory/auto-consolidation-enabled', false)
+
   // Free-form user guidance appended to the consolidation system prompt so the
   // model distills memories according to the user's stated preferences (what to
   // keep, what to ignore, how to weigh importance). Empty = no extra guidance.
@@ -101,6 +107,7 @@ export const useMemoryStore = defineStore('memory', () => {
     activeProvider.reset()
     triggerRounds.reset()
     retainRounds.reset()
+    autoConsolidationEnabled.reset()
     consolidationPrompt.reset()
     resetModelSelection()
   }
@@ -115,6 +122,7 @@ export const useMemoryStore = defineStore('memory', () => {
     modelSearchQuery,
 
     triggerRounds,
+    autoConsolidationEnabled,
     retainRounds,
     consolidationPrompt,
 

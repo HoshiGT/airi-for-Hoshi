@@ -16,6 +16,7 @@ import { useFactorioStore } from '../stores/modules/gaming-factorio'
 import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
 import { useHearingStore } from '../stores/modules/hearing'
 import { useSpeechStore } from '../stores/modules/speech'
+import { useStickersStore } from '../stores/modules/stickers'
 import { useTwitterStore } from '../stores/modules/twitter'
 import { useWebSearchStore } from '../stores/modules/web-search'
 import { useOnboardingStore } from '../stores/onboarding'
@@ -37,6 +38,7 @@ export function useDataMaintenance() {
   const consciousnessStore = useConsciousnessStore()
   const twitterStore = useTwitterStore()
   const webSearchStore = useWebSearchStore()
+  const stickersStore = useStickersStore()
   const discordStore = useDiscordStore()
   const factorioStore = useFactorioStore()
   const minecraftStore = useMinecraftStore()
@@ -64,6 +66,9 @@ export function useDataMaintenance() {
     discordStore.resetState()
     factorioStore.resetState()
     minecraftStore.resetState()
+    // async because it also clears the sticker image blobs in IndexedDB;
+    // fire-and-forget keeps this reset entrypoint synchronous like the rest.
+    void stickersStore.resetState()
   }
 
   function deleteAllChatSessions() {

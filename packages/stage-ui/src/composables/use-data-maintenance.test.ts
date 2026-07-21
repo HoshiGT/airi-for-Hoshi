@@ -58,6 +58,7 @@ vi.mock('../stores/modules/gaming-factorio', () => ({ useFactorioStore: () => ({
 vi.mock('../stores/modules/gaming-minecraft', () => ({ useMinecraftStore: () => ({}) }))
 vi.mock('../stores/modules/hearing', () => ({ useHearingStore: () => ({}) }))
 vi.mock('../stores/modules/speech', () => ({ useSpeechStore: () => ({}) }))
+vi.mock('../stores/modules/stickers', () => ({ useStickersStore: () => ({ resetState: vi.fn() }) }))
 vi.mock('../stores/modules/twitter', () => ({ useTwitterStore: () => ({}) }))
 vi.mock('../stores/modules/web-search', () => ({ useWebSearchStore: () => ({}) }))
 vi.mock('../stores/onboarding', () => ({ useOnboardingStore: () => ({}) }))

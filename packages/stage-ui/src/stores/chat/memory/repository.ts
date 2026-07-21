@@ -44,6 +44,7 @@ export interface RankedMemory {
 }
 
 export interface RetrieveOptions {
+  characterId?: string
   sessionId?: string
   kind?: MemoryKind
   /** @default 8 */
@@ -81,8 +82,10 @@ export class MemoryRepository {
     await this.db.insert(archivedSummaries).values(summary)
   }
 
-  async listMemoryItems(filter?: { sessionId?: string, kind?: MemoryKind }): Promise<MemoryItemRow[]> {
+  async listMemoryItems(filter?: { characterId?: string, sessionId?: string, kind?: MemoryKind }): Promise<MemoryItemRow[]> {
     const conditions = []
+    if (filter?.characterId)
+      conditions.push(eq(memoryItems.characterId, filter.characterId))
     if (filter?.sessionId)
       conditions.push(eq(memoryItems.sessionId, filter.sessionId))
     if (filter?.kind)
@@ -297,6 +300,7 @@ export class LocalKeywordRetriever implements MemoryRetriever {
 
     const limit = options?.limit ?? 8
     const candidates = await this.repository.listMemoryItems({
+      characterId: options?.characterId,
       sessionId: options?.sessionId,
       kind: options?.kind,
     })

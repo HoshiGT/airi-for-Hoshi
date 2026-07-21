@@ -37,6 +37,7 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
   await database.execute(sql`
     CREATE TABLE IF NOT EXISTS memory_items (
       id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       kind TEXT NOT NULL,
       content TEXT NOT NULL,
@@ -52,6 +53,7 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
   await database.execute(sql`
     CREATE TABLE IF NOT EXISTS archived_summaries (
       id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       summary TEXT NOT NULL,
       raw_messages JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -64,6 +66,7 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
     CREATE TABLE IF NOT EXISTS consolidation_runs (
       id TEXT PRIMARY KEY,
       seq SERIAL NOT NULL,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       archived_messages JSONB NOT NULL DEFAULT '[]'::jsonb,
       memory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -73,8 +76,15 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
       created_at TIMESTAMP NOT NULL DEFAULT now()
     );
   `)
+  // Migration: add character_id to existing tables (no-op on fresh installs
+  // because CREATE TABLE already includes the column).
+  await database.execute(sql`ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+  await database.execute(sql`ALTER TABLE archived_summaries ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+  await database.execute(sql`ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+
   await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_session_idx ON memory_items (session_id);`)
   await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_kind_idx ON memory_items (kind);`)
+  await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_character_idx ON memory_items (character_id);`)
   await database.execute(sql`CREATE INDEX IF NOT EXISTS consolidation_runs_session_idx ON consolidation_runs (session_id);`)
 }
 

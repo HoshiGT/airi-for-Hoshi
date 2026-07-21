@@ -94,6 +94,7 @@ function extractJson(text: string): unknown {
 export interface ConsolidationParams {
   provider: ChatProvider
   model: string
+  characterId: string
   sessionId: string
   /** The oldest rounds being trimmed; summarized + archived, then removed upstream. */
   messages: Message[]
@@ -136,7 +137,7 @@ function buildSystemPrompt(guidance?: string): string {
  * responsibility, kept separate so a failed model call never loses live history.
  */
 export async function runConsolidation(params: ConsolidationParams): Promise<ConsolidationRecord> {
-  const { provider, model, sessionId, messages, roundFrom, roundTo, guidance, repository } = params
+  const { provider, model, characterId, sessionId, messages, roundFrom, roundTo, guidance, repository } = params
 
   const transcript = buildTranscript(messages)
   const completion = await generateText({
@@ -152,6 +153,7 @@ export async function runConsolidation(params: ConsolidationParams): Promise<Con
   const archiveId = nanoid()
   await repository.addArchivedSummary({
     id: archiveId,
+    characterId,
     sessionId,
     summary: output.summary,
     rawMessages: messages as unknown[],
@@ -161,6 +163,7 @@ export async function runConsolidation(params: ConsolidationParams): Promise<Con
 
   const items = output.items.map(item => ({
     id: nanoid(),
+    characterId,
     sessionId,
     kind: item.kind,
     content: item.content,

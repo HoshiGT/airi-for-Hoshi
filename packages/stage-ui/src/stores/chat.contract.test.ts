@@ -193,6 +193,7 @@ vi.mock('./modules/artistry-autonomous', () => ({
 vi.mock('./modules/memory', () => ({
   useMemoryStore: () => ({
     configured: false,
+    autoConsolidationEnabled: false,
     triggerRounds: 20,
     retainRounds: 6,
   }),
@@ -213,6 +214,13 @@ vi.mock('./chat/memory/trim', () => ({
 // not pull in the real store's toolset-prompt watcher.
 vi.mock('./modules/web-search', () => ({
   useWebSearchStore: () => ({}),
+}))
+
+// Same side-effect instantiation as web-search: the real store would pull in
+// localforage (IndexedDB) and the vision inference chain, neither of which
+// exists in the node test env.
+vi.mock('./modules/stickers', () => ({
+  useStickersStore: () => ({}),
 }))
 
 const provider = {
