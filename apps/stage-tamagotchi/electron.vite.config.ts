@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path'
+import { env } from 'node:process'
 
 import VueI18n from '@intlify/unplugin-vue-i18n/vite'
 import templateCompilerOptions from '@tresjs/core/template-compiler-options'
@@ -150,6 +151,22 @@ export default defineConfig({
     },
 
     server: {
+      // NOTICE:
+      // The renderer's chat history, character cards and memory all live in
+      // IndexedDB / localStorage, which the browser partitions by origin. In dev
+      // that origin is `http://localhost:<port>`, so a port change silently swaps
+      // the app onto an empty store — it looks exactly like total data loss.
+      //
+      // Vite's default behaviour is to auto-increment past a busy port (5173 ->
+      // 5174), which is precisely how that happens: one leftover electron/vite
+      // process holding 5173 is enough. `strictPort` turns that silent swap into
+      // a loud startup failure, so a stale process gets cleaned up instead of
+      // stranding a day of conversations under a second origin.
+      //
+      // Override the port only to deliberately reopen data saved under another
+      // origin (e.g. AIRI_DEV_PORT=5174 to export an older store).
+      port: Number(env.AIRI_DEV_PORT ?? 5173),
+      strictPort: true,
       fs: {
         // To mute errors like:
         //   The request id ".../node_modules/@fontsource/sniglet/files/sniglet-latin-400-normal.woff" is outside of Vite serving allow list.
