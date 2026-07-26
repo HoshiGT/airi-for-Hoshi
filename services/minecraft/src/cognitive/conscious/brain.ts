@@ -34,6 +34,7 @@ import { PATTERN_CATALOG } from './patterns/catalog'
 import { createPatternRuntime } from './patterns/runtime'
 import { generateBrainSystemPrompt } from './prompts/brain-prompt'
 import { normalizeReplScript } from './repl-code-normalizer'
+import { generateStartupSummary, SessionMemoryStore } from './session-memory'
 import { createCancellationToken } from './task-state'
 
 interface BrainDeps {
@@ -230,6 +231,43 @@ const MAX_QUEUED_CONTROL_ACTIONS = 5
 const MAX_PENDING_CONTROL_ACTIONS = 4
 const ACTION_QUEUE_RECENT_HISTORY_LIMIT = 20
 const MAX_CONVERSATION_HISTORY_MESSAGES = 200
+
+/**
+ * How many messages to drop at once when history exceeds the cap.
+ *
+ * NOTICE: this exists to protect the backend's prompt cache, and the size is the whole point.
+ *
+ * `claude-code-brain` looks a session up by hashing the concatenated text of every user turn except
+ * the newest (`services/claude-code-brain/src/sessions.ts`). Trimming two messages per turn — the
+ * previous behaviour — changed the head of that user sequence on every single turn, so the hash
+ * missed every time and the backend replayed the entire conversation fresh, forever, from the
+ * moment history first hit the cap.
+ *
+ * Dropping a batch instead means the prefix stays byte-identical for roughly `TRIM_BATCH / 2` turns
+ * (each turn appends one user + one assistant message), so all but one turn in twenty is a cache
+ * hit. History length then oscillates between 160 and 200, which is expected and harmless.
+ */
+const CONVERSATION_HISTORY_TRIM_BATCH = 40
+
+/** How often to checkpoint session memory to disk, in turns. */
+const SESSION_MEMORY_CHECKPOINT_TURNS = 20
+
+/**
+ * Drop the oldest messages once history exceeds the cap, in batches.
+ *
+ * Exported so the cache-prefix property can be asserted directly: after a trim, the head of the
+ * user sequence must stay byte-identical for many consecutive turns. That stability is the entire
+ * mechanism by which the backend can resume a session instead of replaying it — see
+ * CONVERSATION_HISTORY_TRIM_BATCH.
+ */
+export function trimConversationHistory(history: Message[]): Message[] {
+  if (history.length <= MAX_CONVERSATION_HISTORY_MESSAGES)
+    return history
+
+  const overflow = history.length - MAX_CONVERSATION_HISTORY_MESSAGES
+  const trimCount = Math.min(Math.max(overflow, CONVERSATION_HISTORY_TRIM_BATCH), history.length)
+  return history.slice(trimCount)
+}
 const NO_ACTION_FOLLOWUP_BUDGET_DEFAULT = 3
 const NO_ACTION_FOLLOWUP_BUDGET_MAX = 8
 const NO_ACTION_STAGNATION_REPEAT_LIMIT = 2
@@ -293,6 +331,13 @@ export class Brain {
   private lastContextView: string | undefined
   private lastReplOutcome: ReplOutcomeSummary | undefined
   private conversationHistory: Message[] = []
+  /**
+   * Durable facts recovered from the previous session, resolved once at startup and then immutable.
+   * See `loadStartupSummary`.
+   */
+  private startupSummary: string | undefined
+  private startupSummaryLoaded = false
+  private readonly sessionMemoryStore = new SessionMemoryStore()
   private lastLlmInputSnapshot: LlmInputSnapshot | null = null
   private runtimeMineflayer: MineflayerWithAgents | null = null
   private readonly llmLogEntries: LlmLogEntry[] = []
@@ -330,9 +375,44 @@ export class Brain {
     this.debugService = DebugService.getInstance()
   }
 
+  /**
+   * Load the previous session's durable facts and freeze them into the system prompt.
+   *
+   * Fire-and-forget by design: the bot must be able to start and act while the summariser is still
+   * thinking. Turns taken before it lands simply have no summary, which is the same as today's
+   * behaviour. Once assigned, `startupSummary` never changes again — the system prompt is the
+   * backend's cache prefix, and rewriting it mid-session would force a full cache-create every turn.
+   */
+  private async loadStartupSummary(): Promise<void> {
+    if (this.startupSummaryLoaded)
+      return
+    this.startupSummaryLoaded = true
+
+    try {
+      const summary = await generateStartupSummary({ store: this.sessionMemoryStore })
+      if (!summary)
+        return
+
+      this.startupSummary = summary
+      this.deps.logger.log('INFO', `Brain: Loaded startup summary from previous session (${summary.length} chars).`)
+    }
+    catch (err) {
+      this.deps.logger.withError(err as Error).warn('Brain: Startup summary unavailable; continuing without it.')
+    }
+  }
+
+  /**
+   * Write the tail of this session's conversation to disk for the next startup to summarise.
+   */
+  public persistSessionMemory(): void {
+    this.sessionMemoryStore.write(this.conversationHistory, this.startupSummary)
+  }
+
   public init(bot: MineflayerWithAgents): void {
     this.deps.logger.log('INFO', 'Brain: Initializing stateful core...')
     this.runtimeMineflayer = bot
+
+    void this.loadStartupSummary()
 
     // Perception Handler
     this.unsubscribeEventBus = this.deps.eventBus.subscribe<PerceptionSignal>('conscious:signal:*', (event: TracedEvent<PerceptionSignal>) => {
@@ -422,6 +502,8 @@ export class Brain {
   }
 
   public destroy(): void {
+    // Save before tearing anything down, so a restart can pick the thread back up.
+    this.persistSessionMemory()
     this.deps.minecraftContextService.unbindBot()
     if (this.unsubscribeEventBus) {
       this.unsubscribeEventBus()
@@ -1799,7 +1881,10 @@ export class Brain {
     this.lastContextView = contextView
 
     // 2. Prepare System Prompt (static + bound master identity)
-    const systemPrompt = generateBrainSystemPrompt(this.deps.taskExecutor.getAvailableActions(), { masterUsername: config.bot.masterUsername })
+    const systemPrompt = generateBrainSystemPrompt(this.deps.taskExecutor.getAvailableActions(), {
+      masterUsername: config.bot.masterUsername,
+      startupSummary: this.startupSummary,
+    })
     this.currentInputEnvelope = {
       id: turnId,
       turnId,
@@ -1841,7 +1926,6 @@ export class Brain {
     // 3. Call LLM with retry logic
     const maxAttempts = 3
     let result: string | null = null
-    let capturedReasoning: string | undefined
     let lastError: unknown
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Check pause at start of each retry attempt
@@ -1903,8 +1987,9 @@ export class Brain {
         if (!content)
           throw new Error('No content from LLM')
 
-        // Capture reasoning for later use
-        capturedReasoning = reasoning
+        // NOTICE: `reasoning` is consumed here (LLM log + debug trace) and then dropped. It is
+        // deliberately not carried into `conversationHistory` — see the note where the assistant
+        // message is appended.
         result = content
 
         this.debugService.traceLLM({
@@ -2058,19 +2143,27 @@ export class Brain {
     try {
       // Only append to conversation history after successful parsing (avoid dirty data on retry)
       this.conversationHistory.push({ role: 'user', content: userMessage })
-      // Store reasoning in the assistant message's reasoning field (if available)
-      // Reasoning is transient thinking and doesn't need the [REASONING] prefix hack anymore
+      // NOTICE: `reasoning` is deliberately NOT stored.
+      //
+      // It used to be kept on the assistant message and sent back verbatim on every subsequent
+      // turn, since xsai forwards `messages` into the request body untouched. That is wasted
+      // context — the model's own scratch thinking, re-billed each turn and growing without bound —
+      // and DeepSeek's API documentation explicitly says not to echo `reasoning_content` back.
+      // It is still recorded for the current turn in the LLM log and the debug trace.
       this.conversationHistory.push({
         role: 'assistant',
         content: result,
-        ...(capturedReasoning && { reasoning: capturedReasoning }),
       } as Message)
 
-      // Trim conversation history as an in-memory safety net for long sessions.
-      if (this.conversationHistory.length > MAX_CONVERSATION_HISTORY_MESSAGES) {
-        const trimCount = this.conversationHistory.length - MAX_CONVERSATION_HISTORY_MESSAGES
-        this.conversationHistory = this.conversationHistory.slice(trimCount)
-      }
+      // Trim conversation history as an in-memory safety net for long sessions. Batched on purpose;
+      // see CONVERSATION_HISTORY_TRIM_BATCH.
+      this.conversationHistory = trimConversationHistory(this.conversationHistory)
+
+      // Checkpoint the session memory periodically. `destroy()` also saves, but a bot process is
+      // just as likely to be killed as shut down cleanly, and losing the whole session's context to
+      // a SIGKILL defeats the point of persisting it.
+      if (turnId % SESSION_MEMORY_CHECKPOINT_TURNS === 0)
+        this.persistSessionMemory()
 
       const actionDefs = new Map(this.deps.taskExecutor.getAvailableActions().map(action => [action.name, action]))
 
