@@ -1,12 +1,32 @@
 import type { Action } from '../../libs/mineflayer'
+import type { MissingResource, SkillResult } from '../../skills/base'
 
 import { Vec3 } from 'vec3'
 import { z } from 'zod'
 
 import { matchesBlockAlias } from '../../skills/actions/block-type-normalizer'
 import { collectBlock } from '../../skills/actions/collect-block'
-import { discard, equip, putInChest, takeFromChest } from '../../skills/actions/inventory'
-import { activateNearestBlock, breakBlockAt, placeBlock } from '../../skills/actions/world-interactions'
+import {
+  ensureAxe,
+  ensureCampfire,
+  ensureChests,
+  ensureCoal,
+  ensureCobblestone,
+  ensureCraftingTable,
+  ensureFurnaces,
+  ensureHoe,
+  ensurePickaxe,
+  ensurePlanks,
+  ensureShovel,
+  ensureSticks,
+  ensureSword,
+  ensureTorches,
+} from '../../skills/actions/ensure'
+import { gatherWood } from '../../skills/actions/gather-wood'
+import { discard, equip, organizeInventory, putInChest, takeFromChest } from '../../skills/actions/inventory'
+import { pickupNearbyItems } from '../../skills/actions/world-interactions'
+import { skillFail, skillOk } from '../../skills/base'
+import { activateNearestBlock, breakBlockAt, placeBlock, tillAndSow, useDoor } from '../../skills/blocks'
 import { ActionError } from '../../utils/errors'
 import { describeRecipePlan } from '../../utils/recipe-planner'
 
@@ -22,6 +42,86 @@ function toCoord(pos: { x: number, y: number, z: number }) {
 function cloneVec3(pos: { x: number, y: number, z: number }): Vec3 {
   return new Vec3(pos.x, pos.y, pos.z)
 }
+
+/**
+ * Run a skill that signals failure by throwing, and hand the model a `SkillResult` instead.
+ *
+ * NOTICE: the sandbox in `cognitive/conscious/js-planner.ts` catches whatever a tool throws and
+ * keeps only `errorMessageFrom(error)` — a bare string. An `ActionError`'s `code` and `context`
+ * never reach the model, so "missing 3 cobblestone" arrives as prose it has to re-parse, if at all.
+ * Wrapping the call converts that into structured data the model can branch on.
+ *
+ * Interrupts are deliberately re-thrown: they are control flow, not a skill outcome, and
+ * `TaskExecutor` relies on seeing them (`cognitive/action/task-executor.ts`).
+ */
+async function structured(
+  successMessage: string,
+  fn: () => Promise<unknown>,
+  detail?: Record<string, unknown>,
+): Promise<SkillResult> {
+  try {
+    const raw = await fn()
+
+    // Skills already migrated to SkillResult pass theirs straight through.
+    if (isSkillResult(raw))
+      return raw
+
+    // The legacy convention: `false` means "did not happen", without saying why.
+    if (raw === false)
+      return skillFail('failed', `${successMessage} — did not succeed, and the skill gave no reason.`, { detail })
+
+    return skillOk(successMessage, detail)
+  }
+  catch (error) {
+    return skillResultFromError(error, detail)
+  }
+}
+
+/**
+ * Translate a thrown skill failure into a `SkillResult`, or rethrow if it is not one.
+ *
+ * Splits control flow from outcomes: an interrupt means the turn is being torn down and must reach
+ * `TaskExecutor`, and anything that is not an `ActionError` is a genuine defect that should surface
+ * as one rather than be reported to the model as a tidy failure.
+ */
+function skillResultFromError(error: unknown, detail?: Record<string, unknown>): SkillResult {
+  if (!(error instanceof ActionError))
+    throw error
+
+  if (error.code === 'INTERRUPTED')
+    throw error
+
+  // `missing` is lifted out of the error's context rather than left inside `detail`: the system
+  // prompt tells the model that this exact field lists what it is short of, and burying it one level
+  // deeper would quietly break the contract the model was given.
+  const { missing, ...context } = error.context ?? {}
+
+  return skillFail(error.code, error.message, {
+    missing: isMissingResources(missing) ? missing : undefined,
+    detail: { ...detail, ...context },
+  })
+}
+
+/** `ActionError.context` is untyped, so the shape has to be checked before it is trusted. */
+function isMissingResources(value: unknown): value is MissingResource[] {
+  return Array.isArray(value)
+    && value.every(entry => typeof entry === 'object' && entry !== null && 'item' in entry)
+}
+
+function isSkillResult(value: unknown): value is SkillResult {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as SkillResult).ok === 'boolean'
+    && typeof (value as SkillResult).reason === 'string'
+    && typeof (value as SkillResult).message === 'string'
+}
+
+/**
+ * Shared schema for the `ensure*` family: "make sure I have N of this, crafting/gathering if needed".
+ */
+const quantitySchema = z.object({
+  quantity: z.number().int().min(1).max(64).default(1).describe('How many you need in total (not how many to add).'),
+})
 
 export const actionsList: Action[] = [
   {
@@ -264,11 +364,28 @@ export const actionsList: Action[] = [
       num: z.number().int().describe('The number of blocks to collect.').min(1),
     }),
     perform: mineflayer => async (type: string, num: number) => {
-      const collected = await collectBlock(mineflayer, type, num)
-      if (collected <= 0) {
-        throw new ActionError('RESOURCE_MISSING', `Failed to collect any ${type}`, { type, requested: num, collected })
+      try {
+        const collected = await collectBlock(mineflayer, type, num)
+        if (collected <= 0) {
+          return skillFail('targetNotFound', `Found no ${type} to collect within range. Retrying from the same spot will find nothing — call moveAway first, or pick a different block.`, {
+            detail: { blockType: type, requested: num, collected: 0 },
+          })
+        }
+
+        // A partial haul is a success, not an error: the model needs the count to decide whether to
+        // keep going, and reporting it as a failure would hide how far it actually got.
+        return skillOk(
+          collected < num
+            ? `Collected ${type} x${collected} of the ${num} requested; nothing more within range.`
+            : `Collected ${type} x${collected}.`,
+          { blockType: type, requested: num, collected },
+        )
       }
-      return `Collected [${type}] x${collected}`
+      catch (error) {
+        // `collectBlock` throws RESOURCE_MISSING when no tool can harvest the vein — the one case
+        // where `missing` tells the model exactly which ensure* call fixes it.
+        return skillResultFromError(error, { blockType: type, requested: num })
+      }
     },
   },
   {
@@ -301,8 +418,7 @@ export const actionsList: Action[] = [
         }
       }
 
-      await breakBlockAt(mineflayer, pos.x, pos.y, pos.z)
-      return `Mined block at (${pos.x}, ${pos.y}, ${pos.z})`
+      return await breakBlockAt(mineflayer, pos.x, pos.y, pos.z)
     },
   },
   {
@@ -350,8 +466,7 @@ export const actionsList: Action[] = [
     }),
     perform: mineflayer => async (type: string) => {
       const pos = mineflayer.bot.entity.position
-      await placeBlock(mineflayer, type, pos.x, pos.y, pos.z)
-      return `Placed [${type}] here`
+      return await placeBlock(mineflayer, type, pos.x, pos.y, pos.z)
     },
   },
   {
@@ -400,8 +515,7 @@ export const actionsList: Action[] = [
       type: z.string().describe('The type of object to activate.'),
     }),
     perform: mineflayer => async (type: string) => {
-      await activateNearestBlock(mineflayer, type)
-      return `Activated nearest [${type}]`
+      return await activateNearestBlock(mineflayer, type)
     },
   },
   {
@@ -415,5 +529,276 @@ export const actionsList: Action[] = [
     perform: mineflayer => (item_name: string, amount: number = 1): string => {
       return pad(describeRecipePlan(mineflayer.bot, item_name, amount))
     },
+  },
+
+  // ---------------------------------------------------------------------------------------------
+  // Navigation to a searched-for target.
+  //
+  // NOTICE: these two are the highest-value additions in this batch. Without them the model wrote
+  // `query.entities().whereName("pig").first().pos.x` by hand, which throws an opaque
+  // "Cannot read properties of undefined" whenever nothing matches — the failure that
+  // `augmentDecisionError` in `cognitive/conscious/brain.ts` was written to rescue, after it was
+  // observed repeating the same crash for several turns before giving up.
+  // ---------------------------------------------------------------------------------------------
+  {
+    name: 'goToNearestEntity',
+    description: 'Walk to the nearest entity of a given type (e.g. pig, cow, zombie, villager). Prefer this over looking up coordinates yourself — it reports clearly when nothing of that type is nearby instead of crashing.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      entity_type: z.string().describe('The entity type to approach, e.g. "pig", "cow", "villager".'),
+      closeness: z.number().min(0).default(2).describe('How close to get, in blocks.'),
+      range: z.number().min(1).max(512).default(64).describe('How far to search, in blocks.'),
+    }),
+    perform: mineflayer => async (entity_type: string, closeness = 2, range = 64) => {
+      return await skills.goToNearestEntity(mineflayer, entity_type, closeness, range)
+    },
+  },
+  {
+    name: 'goToNearestBlock',
+    description: 'Walk to the nearest block of a given type (e.g. crafting_table, furnace, oak_log, water). Reports the block coordinates on success, and says plainly when none is in range.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      block_type: z.string().describe('The block type to approach, e.g. "crafting_table", "iron_ore".'),
+      closeness: z.number().min(0).default(2).describe('How close to get, in blocks.'),
+      range: z.number().min(1).max(512).default(64).describe('How far to search, in blocks.'),
+    }),
+    perform: mineflayer => async (block_type: string, closeness = 2, range = 64) => {
+      return await skills.goToNearestBlock(mineflayer, block_type, closeness, range)
+    },
+  },
+
+  // ---------------------------------------------------------------------------------------------
+  // The `ensure*` family: "make sure I have this, doing whatever it takes".
+  //
+  // Each one recursively gathers and crafts its own prerequisites, so a single call replaces a
+  // multi-turn plan the model would otherwise have to sequence itself (and re-plan on every
+  // failure). They are idempotent: calling them when the item is already in the inventory is a
+  // cheap no-op.
+  // ---------------------------------------------------------------------------------------------
+  {
+    name: 'ensurePickaxe',
+    description: 'Make sure you have a pickaxe, crafting one from the best material you can afford (diamond down to wood), gathering wood/stone first if needed. No-op if you already have one. Call this before mining stone or ore.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} pickaxe(s).`, () => ensurePickaxe(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureSword',
+    description: 'Make sure you have a sword, crafting one from the best material you can afford. No-op if you already have one. Call this before fighting.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} sword(s).`, () => ensureSword(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureAxe',
+    description: 'Make sure you have an axe, crafting one if needed. Speeds up chopping wood considerably.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} axe(s).`, () => ensureAxe(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureShovel',
+    description: 'Make sure you have a shovel, crafting one if needed. Speeds up digging dirt, sand and gravel.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} shovel(s).`, () => ensureShovel(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureHoe',
+    description: 'Make sure you have a hoe, crafting one if needed. Required before tilling farmland.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} hoe(s).`, () => ensureHoe(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureCraftingTable',
+    description: 'Make sure you have a crafting table in your inventory, crafting one from planks (and gathering wood first) if needed.',
+    execution: 'async',
+    schema: z.object({}),
+    perform: mineflayer => async () =>
+      structured('Have a crafting table.', () => ensureCraftingTable(mineflayer)),
+  },
+  {
+    name: 'ensureFurnaces',
+    description: 'Make sure you have furnaces, mining cobblestone and crafting them if needed.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} furnace(s).`, () => ensureFurnaces(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureChests',
+    description: 'Make sure you have chests, crafting them from planks (gathering wood first) if needed.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} chest(s).`, () => ensureChests(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureTorches',
+    description: 'Make sure you have torches, gathering sticks and coal and crafting them if needed. Useful before going underground or at night.',
+    execution: 'async',
+    schema: quantitySchema,
+    perform: mineflayer => async (quantity = 1) =>
+      structured(`Have ${quantity} torch(es).`, () => ensureTorches(mineflayer, quantity)),
+  },
+  {
+    name: 'ensureCampfire',
+    description: 'Make sure you have a campfire, gathering the planks, sticks and coal needed to craft one.',
+    execution: 'async',
+    schema: z.object({}),
+    perform: mineflayer => async () =>
+      structured('Have a campfire.', () => ensureCampfire(mineflayer)),
+  },
+  {
+    name: 'ensurePlanks',
+    description: 'Make sure you have at least this many planks, chopping trees and crafting logs into planks as needed.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      amount: z.number().int().min(1).max(256).describe('Total planks you need in inventory.'),
+    }),
+    perform: mineflayer => async (amount: number) =>
+      structured(`Have ${amount} planks.`, () => ensurePlanks(mineflayer, amount)),
+  },
+  {
+    name: 'ensureSticks',
+    description: 'Make sure you have at least this many sticks, crafting planks into sticks (and gathering wood) as needed.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      amount: z.number().int().min(1).max(256).describe('Total sticks you need in inventory.'),
+    }),
+    perform: mineflayer => async (amount: number) =>
+      structured(`Have ${amount} sticks.`, () => ensureSticks(mineflayer, amount)),
+  },
+  {
+    name: 'ensureCobblestone',
+    description: 'Make sure you have at least this much cobblestone, mining nearby stone as needed. Crafts a pickaxe first if you lack one.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      amount: z.number().int().min(1).max(256).describe('Total cobblestone you need in inventory.'),
+    }),
+    perform: mineflayer => async (amount: number) =>
+      structured(`Have ${amount} cobblestone.`, () => ensureCobblestone(mineflayer, amount)),
+  },
+  {
+    name: 'ensureCoal',
+    description: 'Make sure you have at least this much coal, mining nearby coal ore as needed.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      amount: z.number().int().min(1).max(256).describe('Total coal you need in inventory.'),
+    }),
+    perform: mineflayer => async (amount: number) =>
+      structured(`Have ${amount} coal.`, () => ensureCoal(mineflayer, amount)),
+  },
+
+  // ---------------------------------------------------------------------------------------------
+  // World interaction beyond "place a single block at my feet".
+  // ---------------------------------------------------------------------------------------------
+  {
+    name: 'gatherWood',
+    description: 'Find trees and chop them until you have the requested number of logs. Handles walking between trees and picking up the drops. Prefer this over collectBlocks for wood.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      num: z.number().int().min(1).max(128).describe('How many logs to collect.'),
+      max_distance: z.number().min(1).max(256).default(64).describe('How far to roam looking for trees.'),
+    }),
+    perform: mineflayer => async (num: number, max_distance = 64) =>
+      structured(`Gathered wood until reaching ${num} logs.`, () => gatherWood(mineflayer, num, max_distance)),
+  },
+  {
+    name: 'placeBlockAt',
+    description: 'Place a block at specific coordinates, unlike placeHere which only places at your feet. Handles orientation for torches, stairs, ladders, buttons and levers. Use this to build.',
+    execution: 'async',
+    schema: z.object({
+      type: z.string().describe('The block type to place, e.g. "oak_planks", "torch".'),
+      x: z.number().describe('The x coordinate.'),
+      y: z.number().min(-64).max(320).describe('The y coordinate.'),
+      z: z.number().describe('The z coordinate.'),
+      place_on: z.enum(['top', 'bottom', 'north', 'south', 'east', 'west', 'side'])
+        .default('bottom')
+        .describe('Which face of the neighbouring block to build off. Use "side" for wall torches.'),
+    }),
+    perform: mineflayer => async (type: string, x: number, y: number, z: number, place_on: any = 'bottom') => {
+      return await placeBlock(mineflayer, type, x, y, z, place_on)
+    },
+  },
+  {
+    name: 'tillAndSow',
+    description: 'Till a grass/dirt block into farmland and optionally plant a seed on it. Requires a hoe — call ensureHoe first.',
+    execution: 'async',
+    schema: z.object({
+      x: z.number().describe('The x coordinate of the ground block to till.'),
+      y: z.number().min(-64).max(320).describe('The y coordinate of the ground block to till.'),
+      z: z.number().describe('The z coordinate of the ground block to till.'),
+      seed_type: z.string().optional().describe('Seed to plant, e.g. "wheat_seeds", "carrot". Omit to only till.'),
+    }),
+    perform: mineflayer => async (x: number, y: number, z: number, seed_type?: string) => {
+      return await tillAndSow(mineflayer, x, y, z, seed_type ?? null)
+    },
+  },
+  {
+    name: 'useDoor',
+    description: 'Walk to the nearest door, open it, step through and close it behind you. Doors confuse the pathfinder, so use this rather than trying to walk through one with goToCoordinate.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({}),
+    perform: mineflayer => async () => {
+      return await useDoor(mineflayer)
+    },
+  },
+  {
+    name: 'pickupNearbyItems',
+    description: 'Walk around collecting dropped item stacks off the ground nearby. Useful after a fight or after mining, or if drops were missed.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      distance: z.number().min(1).max(32).default(8).describe('How far to look for dropped items, in blocks.'),
+    }),
+    perform: mineflayer => async (distance = 8) => {
+      return await pickupNearbyItems(mineflayer, distance)
+    },
+  },
+  {
+    name: 'moveAway',
+    description: 'Walk roughly this far away in a random safe direction. Use when a spot is exhausted of resources, or to break out of a stuck situation.',
+    execution: 'async',
+    followControl: 'detach',
+    schema: z.object({
+      distance: z.number().min(1).max(128).default(16).describe('Roughly how far to move, in blocks.'),
+    }),
+    perform: mineflayer => async (distance = 16) => {
+      return await skills.moveAway(mineflayer, distance)
+    },
+  },
+  {
+    name: 'stay',
+    description: 'Stand still and do nothing for a while. Use when asked to wait somewhere. Capped at 300 seconds; interrupted early if something needs attention.',
+    execution: 'async',
+    schema: z.object({
+      seconds: z.number().min(1).max(300).default(30).describe('How long to wait, in seconds.'),
+    }),
+    perform: mineflayer => async (seconds = 30) => {
+      return await skills.stay(mineflayer, seconds)
+    },
+  },
+  {
+    name: 'organizeInventory',
+    description: 'Tidy the inventory by merging partial stacks of the same item. Use when running low on free slots.',
+    execution: 'async',
+    schema: z.object({}),
+    perform: mineflayer => async () =>
+      structured('Organized the inventory.', () => organizeInventory(mineflayer)),
   },
 ]

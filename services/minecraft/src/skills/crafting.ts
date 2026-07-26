@@ -257,7 +257,16 @@ export async function smeltItem(mineflayer: Mineflayer, itemName: string, num = 
   }
 
   if (mineflayer.bot.entity.position.distanceTo(furnaceBlock.position) > 4) {
-    await goToNearestBlock(mineflayer, 'furnace', 4, 32)
+    // NOTICE: `goToNearestBlock` reports failure by return value now that it returns a SkillResult;
+    // it used to throw. Ignoring it let an unreachable furnace fall through to `withFurnace` below,
+    // which then tried to open a furnace up to 32 blocks away and surfaced a mineflayer internal
+    // error instead of "I could not get there".
+    const arrival = await goToNearestBlock(mineflayer, 'furnace', 4, 32)
+    if (!arrival.ok) {
+      // Placed for this smelt and now unreachable — take it back before giving up, or it is lost.
+      await cleanupPlacedFurnace()
+      throw new ActionError('NAVIGATION_FAILED', `Could not reach the furnace: ${arrival.message}`, { reason: arrival.reason })
+    }
   }
   await mineflayer.bot.lookAt(furnaceBlock.position)
 

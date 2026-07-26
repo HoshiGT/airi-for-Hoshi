@@ -67,7 +67,14 @@ export async function gatherWood(
 
       try {
         for (const aLog of aTree) {
-          await breakBlockAt(mineflayer, aLog.position.x, aLog.position.y, aLog.position.z)
+          // NOTICE: `breakBlockAt` now reports failure by return value rather than throwing, so an
+          // unbreakable log has to be skipped explicitly — otherwise the loop spends 1.2s per log
+          // waiting on digs that already failed.
+          const broken = await breakBlockAt(mineflayer, aLog.position.x, aLog.position.y, aLog.position.z)
+          if (!broken.ok) {
+            logger.log(`Skipping ${aLog.name} at ${aLog.position}: ${broken.message}`)
+            continue
+          }
           await sleep(1200) // Simulate gathering delay
         }
         await pickupNearbyItems(mineflayer)
