@@ -113,7 +113,7 @@ describe('useAuthProviderSync', () => {
     syncState.activeModel = ''
     syncState.activeVisionProvider = ''
     syncState.activeVisionModel = ''
-    syncState.activeSpeechProvider = 'speech-noop'
+    syncState.activeSpeechProvider = ''
     syncState.activeSpeechModel = ''
     syncState.activeSpeechVoiceId = ''
     syncState.activeTranscriptionProvider = ''
@@ -135,6 +135,26 @@ describe('useAuthProviderSync', () => {
     expect(syncState.activeModel).toBe('auto')
     expect(syncState.activeSpeechProvider).toBe('official-provider-speech')
     expect(syncState.activeTranscriptionProvider).toBe(OFFICIAL_TRANSCRIPTION_PROVIDER_ID)
+  })
+
+  // ROOT CAUSE:
+  //
+  // `speech-noop` is what the fork writes when the user picks 无 (no voice), so
+  // it is a deliberate choice rather than an empty slot. Upstream's sync treats
+  // it as unset and installs the official speech provider on sign-in, which
+  // turned the voice back on by itself.
+  //
+  // Fixed by only filling an empty speech provider; a chosen provider —
+  // including the explicit "no voice" one — survives authentication.
+  it('leaves an explicit no-voice selection alone after sign-in', async () => {
+    syncState.activeSpeechProvider = 'speech-noop'
+    useAuthProviderSync()
+
+    await syncState.authenticatedHook?.()
+
+    expect(syncState.activeSpeechProvider).toBe('speech-noop')
+    // The provider is still configured, so switching to it later needs no re-auth.
+    expect(syncMocks.forceProviderConfigured).toHaveBeenCalledWith('official-provider-speech')
   })
 
   it('retries provider activation when the first authenticated sync fails', async () => {
