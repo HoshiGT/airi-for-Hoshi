@@ -34,6 +34,7 @@
     "mineflayer-pvp": "catalog:",
     "mineflayer-tool": "catalog:",
     "nanoid": "catalog:",
+    "playwright": "catalog:",
     "prismarine-block": "catalog:",
     "prismarine-entity": "catalog:",
     "prismarine-item": "catalog:",
@@ -48,6 +49,7 @@
     "zod-to-json-schema": "catalog:"
   },
   "devDependencies": {
-    "@types/ws": "catalog:"
+    "@types/ws": "catalog:",
+    "prismarine-chunk": "catalog:"
   }
 }

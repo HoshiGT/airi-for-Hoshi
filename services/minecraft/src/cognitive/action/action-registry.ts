@@ -1,7 +1,11 @@
 import type { Action } from '../../libs/mineflayer'
 import type { Mineflayer } from '../../libs/mineflayer/core'
 
+import { config } from '../../composables/config'
 import { actionsList } from './llm-actions'
+
+/** Tools that need the headless renderer; removed wholesale when vision is disabled. */
+const VISION_ACTIONS = new Set(['look'])
 
 /**
  * ActionRegistry provides a centralized registry for all available actions
@@ -12,7 +16,11 @@ export class ActionRegistry {
   private mineflayer: Mineflayer | null = null
 
   constructor() {
-    this.actions = actionsList
+    // Vision tools are dropped rather than left to fail at call time: an advertised tool costs
+    // description tokens on every single turn, and a blind bot should not be told it can see.
+    this.actions = config.vision.enabled
+      ? actionsList
+      : actionsList.filter(action => !VISION_ACTIONS.has(action.name))
   }
 
   /**

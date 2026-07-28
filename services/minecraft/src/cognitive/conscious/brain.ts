@@ -5,6 +5,7 @@ import type { AiriBridge } from '../../airi/airi-bridge'
 import type { MinecraftContextService } from '../../airi/minecraft-context-service'
 import type { ConversationUpdateEvent } from '../../debug/types'
 import type { Action } from '../../libs/mineflayer/action'
+import type { VisionFrame } from '../../vision/bot-camera'
 import type { TaskExecutor } from '../action/task-executor'
 import type { ActionInstruction } from '../action/types'
 import type { EventBus, TracedEvent } from '../event-bus'
@@ -12,6 +13,7 @@ import type { PerceptionSignal } from '../perception/types/signals'
 import type { ReflexManager } from '../reflex/reflex-manager'
 import type { BotEvent, MineflayerWithAgents } from '../types'
 import type { PlannerGlobalDescriptor } from './js-planner'
+import type { ActionRuntimeResult } from './js-planner-sandbox-protocol'
 import type { LLMAgent, LLMResult } from './llm-agent'
 import type { LlmLogEntry, LlmLogEntryKind } from './llm-log'
 import type { CancellationToken } from './task-state'
@@ -19,6 +21,7 @@ import type { CancellationToken } from './task-state'
 import { config } from '../../composables/config'
 import { DebugService } from '../../debug'
 import { ActionError } from '../../utils/errors'
+import { hasPendingVisionFrame, takePendingVisionFrame } from '../../vision/bot-camera'
 import { buildConsciousContextView } from './context-view'
 import { createHistoryRuntime } from './history-query'
 import { JavaScriptPlanner } from './js-planner'
@@ -216,8 +219,42 @@ function stringifyForLog(value: unknown): string {
   }
 }
 
+/**
+ * Builds this turn's user message, carrying a rendered frame alongside the text when the bot took
+ * one for itself.
+ *
+ * The image rides on the newest user message only. `claude-code-brain` forwards images from
+ * messages after the last assistant turn (`services/claude-code-brain/src/translate.ts`), and the
+ * plain-text form of this same message is what goes into `conversationHistory` — so a screenshot is
+ * paid for once, on the turn that needs it, instead of being re-billed for the rest of the session.
+ */
+function buildUserTurnMessage(userMessage: string, frame: VisionFrame | null): Message {
+  if (!frame)
+    return { role: 'user', content: userMessage }
+
+  const vantage = `[VISION] Rendered from your eyes at (${frame.vantage.x}, ${frame.vantage.y}, ${frame.vantage.z}), yaw ${frame.vantage.yaw}, pitch ${frame.vantage.pitch}. This is the only turn that carries this image.`
+
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: `${userMessage}\n\n${vantage}` },
+      { type: 'image_url', image_url: { url: frame.dataUrl } },
+    ],
+  }
+}
+
 const NO_ACTION_FOLLOWUP_SOURCE_ID = 'brain:no_action_followup'
 const NO_ACTION_BUDGET_ALERT_SOURCE_ID = 'brain:no_action_budget'
+const VISION_FOLLOWUP_SOURCE_ID = 'brain:vision_followup'
+
+/**
+ * How many looks in a row may each schedule their own follow-up turn.
+ *
+ * A look only pays off when the model then acts on what it saw. Without a cap, "look, decide to
+ * look again" is a loop that bills an image every turn, so after this many consecutive
+ * vision-triggered turns the pending frame is dropped and the model is told to act instead.
+ */
+const VISION_FOLLOWUP_STREAK_LIMIT = 3
 
 /**
  * Priority tiers for event scheduling (lower = higher priority).
@@ -365,6 +402,8 @@ export class Brain {
   private noActionFollowupBudgetRemaining = NO_ACTION_FOLLOWUP_BUDGET_DEFAULT
   private noActionFollowupLastSignature: string | null = null
   private noActionFollowupStagnationCount = 0
+  /** Consecutive turns that were themselves triggered by a look; see {@link VISION_FOLLOWUP_STREAK_LIMIT}. */
+  private visionFollowupStreak = 0
   private errorBurstGuardState: ErrorBurstGuardState | null = null
   private errorBurstGuardSuppressUntilTurnId = 0
   private unsubscribeEventBus: (() => void) | null = null
@@ -1645,6 +1684,82 @@ export class Brain {
     )
   }
 
+  /**
+   * Gives the model a turn to actually look at the frame it just rendered.
+   *
+   * `look` returns text ("captured, you will see it next turn") because a sandboxed tool cannot
+   * hand back an image. Without a follow-up the picture would sit in the mailbox until some
+   * unrelated event happened to trigger the next turn — which, for an idle bot, could be minutes,
+   * or long enough that the view is no longer what the bot is looking at.
+   */
+  private queueVisionFollowup(
+    bot: MineflayerWithAgents,
+    triggeringEvent: BotEvent,
+    turnId: number,
+    actions: ActionRuntimeResult[],
+  ): void {
+    const looked = actions.some(item => item.action.tool === 'look' && item.ok)
+    if (!looked || !hasPendingVisionFrame())
+      return
+
+    const triggeredByVision = triggeringEvent.source.type === 'system'
+      && triggeringEvent.source.id === VISION_FOLLOWUP_SOURCE_ID
+    this.visionFollowupStreak = triggeredByVision ? this.visionFollowupStreak + 1 : 1
+
+    if (this.visionFollowupStreak > VISION_FOLLOWUP_STREAK_LIMIT) {
+      // Drop the frame with the follow-up: leaving it queued would attach a stale view to whatever
+      // unrelated turn comes next.
+      takePendingVisionFrame()
+      this.visionFollowupStreak = 0
+
+      this.appendLlmLog({
+        turnId,
+        kind: 'scheduler',
+        eventType: triggeringEvent.type,
+        sourceType: triggeringEvent.source.type,
+        sourceId: triggeringEvent.source.id,
+        tags: ['scheduler', 'vision', 'blocked'],
+        text: `Blocked vision follow-up after ${VISION_FOLLOWUP_STREAK_LIMIT} consecutive looks`,
+      })
+
+      void this.enqueueEvent(bot, {
+        type: 'system_alert',
+        payload: {
+          reason: 'vision_followup_exhausted',
+          guidance: `You looked ${VISION_FOLLOWUP_STREAK_LIMIT} turns in a row without acting. The latest picture was discarded. Decide from what you already saw, or use the world state and the map.`,
+        },
+        source: { type: 'system', id: VISION_FOLLOWUP_SOURCE_ID },
+        timestamp: Date.now(),
+      }).catch(err =>
+        this.deps.logger.withError(err).error('Brain: Failed to enqueue vision follow-up limit alert'),
+      )
+      return
+    }
+
+    this.appendLlmLog({
+      turnId,
+      kind: 'scheduler',
+      eventType: triggeringEvent.type,
+      sourceType: triggeringEvent.source.type,
+      sourceId: triggeringEvent.source.id,
+      tags: ['scheduler', 'vision'],
+      text: 'Scheduled vision follow-up turn',
+      metadata: { streak: this.visionFollowupStreak },
+    })
+
+    void this.enqueueEvent(bot, {
+      type: 'system_alert',
+      payload: {
+        reason: 'vision_frame_ready',
+        guidance: 'The view you rendered is attached to this turn. Act on what you can see.',
+      },
+      source: { type: 'system', id: VISION_FOLLOWUP_SOURCE_ID },
+      timestamp: Date.now(),
+    }).catch(err =>
+      this.deps.logger.withError(err).error('Brain: Failed to enqueue vision follow-up'),
+    )
+  }
+
   // --- Event Queue Logic ---
 
   private async enqueueEvent(bot: MineflayerWithAgents, event: BotEvent): Promise<void> {
@@ -1923,6 +2038,10 @@ export class Brain {
       isProcessing: true,
     })
 
+    // A frame the bot rendered for itself on an earlier turn. Drained once, before the retry loop,
+    // so a retried request still carries the picture the model asked for.
+    const visionFrame = takePendingVisionFrame()
+
     // 3. Call LLM with retry logic
     const maxAttempts = 3
     let result: string | null = null
@@ -1948,7 +2067,7 @@ export class Brain {
         const messages: Message[] = [
           { role: 'system', content: systemPrompt },
           ...this.conversationHistory,
-          { role: 'user', content: userMessage },
+          buildUserTurnMessage(userMessage, visionFrame),
         ]
         this.lastLlmInputSnapshot = {
           systemPrompt,
@@ -2141,7 +2260,9 @@ export class Brain {
     }
 
     try {
-      // Only append to conversation history after successful parsing (avoid dirty data on retry)
+      // Only append to conversation history after successful parsing (avoid dirty data on retry).
+      // Deliberately the plain text, never the image parts built by `buildUserTurnMessage`: a
+      // rendered frame is worth its tokens on the turn that asked for it and nowhere else.
       this.conversationHistory.push({ role: 'user', content: userMessage })
       // NOTICE: `reasoning` is deliberately NOT stored.
       //
@@ -2234,6 +2355,7 @@ export class Brain {
         })),
       )
       this.maybeActivateErrorBurstGuard(bot, event, turnId)
+      this.queueVisionFollowup(bot, event, turnId, runResult.actions)
 
       if (runResult.actions.length === 0 || runResult.actions.every(item => item.action.tool === 'skip')) {
         this.debugService.emit('debug:repl_result', {

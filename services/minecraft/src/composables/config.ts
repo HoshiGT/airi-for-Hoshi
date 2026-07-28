@@ -44,6 +44,18 @@ export const configSchema = z.object({
     server: z.boolean().default(false),
     viewer: z.boolean().default(false),
   }),
+  vision: z.object({
+    enabled: z.boolean().default(true),
+    // Separate from the debug viewer's port so both can run side by side; this one only ever
+    // serves the bot's own headless browser.
+    port: z.coerce.number().int().min(1).max(65535).default(3008),
+    // Frame size drives the model's image token cost (roughly width*height/750 tokens), so it is
+    // kept modest: large enough to read block shapes, small enough to look often.
+    width: z.coerce.number().int().min(160).max(1920).default(640),
+    height: z.coerce.number().int().min(120).max(1080).default(400),
+    // Chunks streamed around the bot. Each extra ring costs meshing time on the first look.
+    viewDistance: z.coerce.number().int().min(1).max(8).default(4),
+  }),
   bot: z.object({
     username: requiredString('BOT_USERNAME'),
     host: requiredString('BOT_HOSTNAME'),
@@ -102,6 +114,13 @@ const defaultConfig: Omit<Config, 'openai'> = {
     server: false,
     viewer: false,
   },
+  vision: {
+    enabled: true,
+    port: 3008,
+    width: 640,
+    height: 400,
+    viewDistance: 4,
+  },
 }
 
 // Create a singleton config instance
@@ -123,6 +142,15 @@ export function initEnv(): void {
       mcp: env.ENABLE_MCP_SERVER === 'true',
       server: env.ENABLE_DEBUG_SERVER === 'true',
       viewer: env.ENABLE_MINECRAFT_VIEWER === 'true',
+    },
+    vision: {
+      // Opt-out rather than opt-in: the renderer stays dormant until the model actually looks,
+      // so an unused camera costs nothing but a missing one silently blinds the bot.
+      enabled: env.ENABLE_BOT_VISION !== 'false',
+      port: env.BOT_VISION_PORT || defaultConfig.vision.port,
+      width: env.BOT_VISION_WIDTH || defaultConfig.vision.width,
+      height: env.BOT_VISION_HEIGHT || defaultConfig.vision.height,
+      viewDistance: env.BOT_VISION_VIEW_DISTANCE || defaultConfig.vision.viewDistance,
     },
     bot: {
       username: env.BOT_USERNAME || defaultConfig.bot.username,

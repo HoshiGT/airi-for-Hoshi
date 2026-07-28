@@ -1,9 +1,11 @@
 import type { Action } from '../../libs/mineflayer'
 import type { MissingResource, SkillResult } from '../../skills/base'
 
+import { errorMessageFrom } from '@moeru/std'
 import { Vec3 } from 'vec3'
 import { z } from 'zod'
 
+import { config } from '../../composables/config'
 import { matchesBlockAlias } from '../../skills/actions/block-type-normalizer'
 import { collectBlock } from '../../skills/actions/collect-block'
 import {
@@ -29,6 +31,7 @@ import { skillFail, skillOk } from '../../skills/base'
 import { activateNearestBlock, breakBlockAt, placeBlock, tillAndSow, useDoor } from '../../skills/blocks'
 import { ActionError } from '../../utils/errors'
 import { describeRecipePlan } from '../../utils/recipe-planner'
+import { useBotCamera } from '../../vision/bot-camera'
 
 import * as skills from '../../skills'
 
@@ -162,6 +165,36 @@ export const actionsList: Action[] = [
       mineflayer.interrupt('stop tool called')
 
       return 'all actions stopped'
+    },
+  },
+  {
+    name: 'look',
+    description: 'Render what you are looking at right now as a picture. The image is not returned by this call — it arrives attached to your next turn, so end the script after calling it. Use it when the text world state cannot answer "what does this actually look like": inspecting a build, judging terrain, checking whether a structure is what you think it is. To look elsewhere first, turn your head with botCall(\'look\', [yaw, pitch]).',
+    execution: 'async',
+    // Perception, not world interaction: it must not consume the action queue or pause following.
+    readonly: true,
+    schema: z.object({}),
+    perform: mineflayer => async (): Promise<SkillResult> => {
+      if (!config.vision.enabled)
+        return skillFail('vision_disabled', 'Vision is turned off for this bot (ENABLE_BOT_VISION=false), so you cannot see pictures. Rely on the world state and the map instead.')
+
+      try {
+        const frame = await useBotCamera(mineflayer).capture()
+
+        // A frame that never settled is still worth sending, but the model should know it may be
+        // looking at a half-meshed world rather than an empty one.
+        const caveat = frame.settled
+          ? ''
+          : ' The renderer was still loading chunks, so parts of the view may be missing.'
+
+        return skillOk(
+          `Captured a ${frame.width}x${frame.height} view from your eyes; it will be attached to your next turn.${caveat}`,
+          { width: frame.width, height: frame.height, durationMs: frame.durationMs, settled: frame.settled },
+        )
+      }
+      catch (error) {
+        return skillFail('vision_unavailable', `Could not render a view: ${errorMessageFrom(error)}`)
+      }
     },
   },
   {
