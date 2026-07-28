@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import type { Live2DLipSync, Live2DLipSyncOptions } from '@proj-airi/model-driver-lipsync'
 import type { Profile } from '@proj-airi/model-driver-lipsync/shared/wlipsync'
+import type { VrmInteractionTarget } from '@proj-airi/stage-ui-three'
 import type { SpeechProviderWithExtraOptions } from '@xsai-ext/providers/utils'
 import type { UnElevenLabsOptions } from 'unspeech'
 
 import type { EmotionPayload } from '../../constants/emotions'
 import type { SpeechTransport, StageTtsSession, StreamingSessionSnapshot } from '../../libs/speech/tts-session'
 
+import { defineInvokeHandler } from '@moeru/eventa'
 import { sleep } from '@moeru/std'
 import { createLive2DLipSync } from '@proj-airi/model-driver-lipsync'
 import { wlipsyncProfile } from '@proj-airi/model-driver-lipsync/shared/wlipsync'
 import { createPlaybackManager, createSpeechPipeline, normalizeActPayload } from '@proj-airi/pipelines-audio'
 import { Live2DScene, useLive2dParams } from '@proj-airi/stage-ui-live2d'
+import { MMDScene } from '@proj-airi/stage-ui-mmd'
 import { SpineScene } from '@proj-airi/stage-ui-spine'
 import { ThreeScene } from '@proj-airi/stage-ui-three'
 import { animations } from '@proj-airi/stage-ui-three/assets/vrm'
@@ -36,6 +39,7 @@ import { getDefaultStreamingModel, getDefinedProvider } from '../../libs/provide
 import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID } from '../../libs/providers/providers/official'
 import { bindSpeakingStateToPlaybackManager } from '../../libs/speech/playback-speaking-state'
 import { createStageTtsSession } from '../../libs/speech/tts-session'
+import { getSpeechBusContext, speechOutputGetPlaybackState } from '../../services/speech/bus'
 import { useAudioContext, useSpeakingStore } from '../../stores/audio'
 import { useBackgroundStore } from '../../stores/background'
 import { useChatOrchestratorStore } from '../../stores/chat'
@@ -64,6 +68,7 @@ const { getDb } = useDuckDb()
 const vrmViewerRef = ref<InstanceType<typeof ThreeScene>>()
 const live2dSceneRef = ref<InstanceType<typeof Live2DScene>>()
 const spineSceneRef = ref<InstanceType<typeof SpineScene>>()
+const mmdSceneRef = ref<InstanceType<typeof MMDScene>>()
 
 const settingsStore = useSettings()
 const {
@@ -88,9 +93,34 @@ const {
   spineRenderScale,
 } = storeToRefs(settingsStore)
 const { mouthOpenSize, nowSpeaking } = storeToRefs(useSpeakingStore())
+const disposePlaybackStateHandler = defineInvokeHandler(
+  getSpeechBusContext(),
+  speechOutputGetPlaybackState,
+  () => ({ speaking: nowSpeaking.value }),
+)
 const { audioContext } = useAudioContext()
 const currentAudioSource = ref<AudioBufferSourceNode>()
-const { latestStopRequest } = storeToRefs(useSpeechOutputControlStore())
+const speechOutputControlStore = useSpeechOutputControlStore()
+const { latestStopRequest, speechMuted } = storeToRefs(speechOutputControlStore)
+const lastVrmInteractionAt = new Map<VrmInteractionTarget, number>()
+const VRM_INTERACTION_COOLDOWN_MS = 450
+
+function getVrmInteractionExpression(target: VrmInteractionTarget) {
+  if (target === 'head')
+    return 'happy'
+  if (target === 'leftFoot' || target === 'rightFoot')
+    return 'relaxed'
+  return 'surprised'
+}
+
+function onVRMInteract(target: VrmInteractionTarget) {
+  const now = Date.now()
+  const lastTriggeredAt = lastVrmInteractionAt.get(target) ?? 0
+  if (now - lastTriggeredAt < VRM_INTERACTION_COOLDOWN_MS)
+    return
+  lastVrmInteractionAt.set(target, now)
+  vrmViewerRef.value?.setExpression(getVrmInteractionExpression(target), 1)
+}
 
 const { onBeforeMessageComposed, onBeforeSend, onTokenLiteral, onTokenSpecial, onStreamEnd, onAssistantResponseEnd } = useChatOrchestratorStore()
 const chatHookCleanups: Array<() => void> = []
@@ -177,6 +207,9 @@ const emotionsQueue = createQueue<EmotionPayload>({
       }
       else if (stageModelRenderer.value === 'spine') {
         spineSceneRef.value?.setEmotion(ctx.data.name, ctx.data.intensity)
+      }
+      else if (stageModelRenderer.value === 'mmd') {
+        mmdSceneRef.value?.setEmotion(ctx.data.name, ctx.data.intensity)
       }
     },
   ],
@@ -364,6 +397,9 @@ function trackOfficialAutoTtsForTurn(modelId: string) {
 const speechPipeline = createSpeechPipeline<AudioBuffer>({
   tts: async (request, signal) => {
     if (signal.aborted)
+      return null
+
+    if (speechMuted.value)
       return null
 
     if (activeSpeechProvider.value === 'speech-noop')
@@ -667,7 +703,10 @@ function resolveStreamingSessionModel(): string | null {
   return sessionModel
 }
 
-function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
+function buildStreamingSnapshot(turnId: string): StreamingSessionSnapshot | null {
+  if (speechMuted.value)
+    return null
+
   // Snapshotted once per session, so a mid-session provider/voice swap
   // does not corrupt an in-flight session — the watcher below detects
   // changes and tears down explicitly. Returns `null` when streaming
@@ -701,7 +740,7 @@ function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
       audio: { sample_rate: 24000, bit_rate: 64000 },
     },
     ownerId: activeCardId.value,
-    onImmediateSpecial: playSpecialToken,
+    onImmediateSpecial: special => playSpecialToken(special, { turnId }),
   }
 }
 
@@ -715,7 +754,7 @@ function resolveSpeechTransport(providerId: string | null | undefined): SpeechTr
   return getDefinedProvider(providerId)?.capabilities?.speech?.transport
 }
 
-function openTtsSession(): StageTtsSession {
+function openTtsSession(turnId: string): StageTtsSession {
   // A session must only clear the module-level `currentSession` if it IS that session. The previous
   // code cleared it whenever any `stream-` session completed, which is unsafe once sessions exist that
   // are not assigned to `currentSession` (e.g. one-off read-aloud sessions): one of those finishing
@@ -728,11 +767,12 @@ function openTtsSession(): StageTtsSession {
   }
   session = createStageTtsSession<AudioBuffer>({
     transport: resolveSpeechTransport(activeSpeechProvider.value),
-    streaming: buildStreamingSnapshot,
+    streaming: () => buildStreamingSnapshot(turnId),
     audioContext,
     playbackManager,
     openIntent: opts => speechRuntimeStore.openIntent(opts),
     intentOptions: () => ({
+      turnId,
       ownerId: activeCardId.value,
       priority: 'normal',
       behavior: 'queue',
@@ -765,16 +805,25 @@ watch(latestStopRequest, (request) => {
   stopSpeechOutput(request.reason)
 })
 
-chatHookCleanups.push(onBeforeMessageComposed(async () => {
+watch(speechMuted, (muted) => {
+  if (muted)
+    stopSpeechOutput('muted')
+}, { immediate: true })
+
+chatHookCleanups.push(onBeforeMessageComposed(async (_message, context) => {
   officialAutoTtsTrackedForTurn = false
   playbackManager.stopAll('new-message')
-
-  setupAnalyser()
-  await setupLipSync()
   resetAssistantSpeechSurface('new-message')
 
   currentSession?.cancel('new-message')
-  currentSession = openTtsSession()
+  currentSession = null
+
+  if (speechMuted.value)
+    return
+
+  setupAnalyser()
+  await setupLipSync()
+  currentSession = openTtsSession(context.turnId)
 }))
 
 chatHookCleanups.push(onBeforeSend(async () => {
@@ -785,7 +834,14 @@ chatHookCleanups.push(onTokenLiteral(async (literal) => {
   currentSession?.appendText(literal)
 }))
 
-chatHookCleanups.push(onTokenSpecial(async (special) => {
+chatHookCleanups.push(onTokenSpecial(async (special, context) => {
+  // Muting speech must not suppress non-audio signals such as emotion, motion,
+  // delay, or plugin calls that normally travel through the TTS session.
+  if (speechMuted.value) {
+    await playSpecialToken(special, { turnId: context.turnId })
+    return
+  }
+
   currentSession?.appendSpecial(special)
 }))
 
@@ -881,6 +937,9 @@ function canvasElement() {
 
   else if (stageModelRenderer.value === 'spine')
     return spineSceneRef.value?.canvasElement()
+
+  else if (stageModelRenderer.value === 'mmd')
+    return mmdSceneRef.value?.canvasElement()
 }
 
 function readRenderTargetRegionAtClientPoint(clientX: number, clientY: number, radius: number) {
@@ -895,7 +954,9 @@ async function captureFrame() {
     ? live2dSceneRef.value?.captureFrame()
     : stageModelRenderer.value === 'vrm'
       ? vrmViewerRef.value?.captureFrame()
-      : spineSceneRef.value?.captureFrame())
+      : stageModelRenderer.value === 'mmd'
+        ? mmdSceneRef.value?.captureFrame()
+        : spineSceneRef.value?.captureFrame())
 
   if (!activeBackgroundUrl.value || !charBlob)
     return charBlob
@@ -943,6 +1004,7 @@ async function captureFrame() {
 }
 
 onUnmounted(() => {
+  disposePlaybackStateHandler()
   resetLive2dLipSync()
   chatHookCleanups.forEach(dispose => dispose?.())
   viewUpdateCleanups.forEach(dispose => dispose?.())
@@ -1012,6 +1074,7 @@ defineExpose({
         :enable-orbit-controls="props.enableOrbitControls"
         :current-audio-source="currentAudioSource"
         @error="console.error"
+        @vrm-interact="onVRMInteract"
       />
       <SpineScene
         v-if="stageModelRenderer === 'spine' && showStage"
@@ -1027,6 +1090,20 @@ defineExpose({
         :idle-animation-enabled="spineIdleAnimationEnabled"
         :max-fps="spineMaxFps"
         :render-scale="spineRenderScale"
+      />
+      <MMDScene
+        v-if="stageModelRenderer === 'mmd' && showStage"
+        ref="mmdSceneRef"
+        v-model:state="componentState"
+        min-w="50% <lg:full" min-h="100 sm:100"
+        h-full w-full flex-1
+        :model-src="stageModelSelectedUrl"
+        :model-id="stageModelSelected"
+        :paused="paused"
+        :cursor-position="cursorPosition"
+        :enable-orbit-controls="props.enableOrbitControls"
+        :current-audio-source="currentAudioSource"
+        @error="console.error"
       />
       <div
         v-if="stageModelRenderer === 'godot'"

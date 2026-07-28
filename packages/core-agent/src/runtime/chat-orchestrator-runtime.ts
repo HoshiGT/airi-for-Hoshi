@@ -387,15 +387,23 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     }
   }
 
+  function getStablePromptTimestamp(message: ChatHistoryItem, fallbackCreatedAt: number) {
+    if (typeof message.createdAt === 'number')
+      return message.createdAt
+
+    message.createdAt = fallbackCreatedAt
+    return fallbackCreatedAt
+  }
+
   function buildProviderMessages(sessionMessagesForSend: ChatHistoryItem[]) {
     const nowTs = now()
 
     return sessionMessagesForSend.map((msg) => {
-      const { context: _context, id: _id, createdAt, ...withoutContext } = msg
+      const { context: _context, id: _id, createdAt: _createdAt, ...withoutContext } = msg
       const rawMessage = unwrapMessage(withoutContext)
 
       if (rawMessage.role === 'user') {
-        return prependTextToContent(rawMessage, formatTimePrefix(createdAt ?? nowTs))
+        return prependTextToContent(rawMessage, formatTimePrefix(getStablePromptTimestamp(msg, nowTs)))
       }
 
       if (rawMessage.role === 'assistant') {
@@ -435,8 +443,14 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     const sendingCreatedAt = now()
 
     // TODO: Expire or prune stale runtime contexts from disconnected services before composing.
+    // Allocate the three per-round ids in their historical order so callers
+    // with deterministic id factories keep the same durable message ids.
+    const streamContextMessageId = createId()
+    const assistantMessageId = createId()
+    const roundId = createId()
     const streamingMessageContext: ChatStreamEventContext = {
-      message: { role: 'user', content: sendingMessage, createdAt: sendingCreatedAt, id: createId() },
+      turnId: roundId,
+      message: { role: 'user', content: sendingMessage, createdAt: sendingCreatedAt, id: streamContextMessageId },
       contexts: deps.context.snapshot(),
       composedMessage: [],
       input: options.input,
@@ -464,14 +478,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       slices: [],
       tool_results: [],
       createdAt: now(),
-      id: createId(),
+      id: assistantMessageId,
     }
     patchForegroundStream(sessionId, buildingMessage)
     const sendSource = options.input ? 'voice' : 'text'
     const activeProvider = deps.getActiveProvider?.() ?? ''
     // The user message is the durable start of a round, so its ID also serves
     // as the correlation key for every telemetry milestone emitted by it.
-    const roundId = createId()
     const correlation: ChatRoundCorrelation = {
       conversationId: sessionId,
       roundId,

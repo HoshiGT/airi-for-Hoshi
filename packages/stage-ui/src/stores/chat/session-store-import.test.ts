@@ -164,7 +164,9 @@ describe('chat-session-store · importSessions', () => {
 
     expect(store.activeSessionId).toBe('sess-imported')
     expect(store.sessionMetas['sess-imported']).toBeDefined()
-    expect(store.sessionMessages['sess-imported']?.[0]?.content).toBe('hello-from-backup')
+    // Position, not just presence: the store prepends the active card's system
+    // message to whatever it loads, so the restored history sits behind it.
+    expect(store.sessionMessages['sess-imported']?.filter(message => message.role !== 'system')[0]?.content).toBe('hello-from-backup')
 
     // Reload-visible: the current user's index bucket references the session.
     const localIndex = storedIndexes.get('local')
@@ -290,7 +292,7 @@ describe('chat-session-store · importSessions', () => {
 
     expect(storeA.activeSessionId).toBe('sess-imported')
     expect(storeA.sessionMetas['sess-imported']).toBeDefined()
-    expect(storeA.sessionMessages['sess-imported']?.[0]?.content).toBe('hello-from-backup')
+    expect(storeA.sessionMessages['sess-imported']?.filter(message => message.role !== 'system')[0]?.content).toBe('hello-from-backup')
     // The stale session list must be gone from window A's memory too — the
     // import replaced the index wholesale.
     expect(storeA.sessionMetas['sess-old']).toBeUndefined()

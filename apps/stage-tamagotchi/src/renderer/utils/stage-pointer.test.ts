@@ -13,7 +13,10 @@ function inputs(overrides: Partial<StagePointerInputs> = {}): StagePointerInputs
     fadeOnHoverEnabled: true,
     clickThroughAvailable: true,
     isOutsideWindow: false,
+    // Cursor near the character (radius sample hits it, so the stage fades) but not on a visible
+    // pixel — the case where click-through is both wanted and safe.
     isTransparent: false,
+    isTransparentForMouseEvents: true,
     ...overrides,
   }
 }
@@ -50,6 +53,14 @@ describe('resolveStagePointerBehavior', () => {
     const behavior = resolveStagePointerBehavior(inputs())
 
     expect(behavior.ignoreMouseEvents).toBe(true)
+    expect(behavior.fadeOnCursorWithin).toBe(true)
+    expect(behavior.trackCursorTransparency).toBe(true)
+  })
+
+  it('keeps the window interactive while the cursor is on a visible model pixel', () => {
+    const behavior = resolveStagePointerBehavior(inputs({ isTransparentForMouseEvents: false }))
+
+    expect(behavior.ignoreMouseEvents).toBe(false)
     expect(behavior.fadeOnCursorWithin).toBe(true)
     expect(behavior.trackCursorTransparency).toBe(true)
   })

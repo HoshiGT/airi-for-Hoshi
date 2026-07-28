@@ -85,6 +85,16 @@ const isTransparentByThree = useThreeSceneIsTransparentAtPoint(
   relativeMouseY,
   { regionRadius: 25 },
 )
+const isTransparentByPixelsExact = useCanvasPixelIsTransparentAtPoint(
+  stageCanvas,
+  relativeMouseX,
+  relativeMouseY,
+)
+const isTransparentByThreeExact = useThreeSceneIsTransparentAtPoint(
+  widgetStageRef,
+  relativeMouseX,
+  relativeMouseY,
+)
 
 const settingsStore = useSettings()
 const { stageModelRenderer, stageModelSelectedUrl } = storeToRefs(settingsStore)
@@ -110,6 +120,18 @@ const isTransparent = computed(() => {
 
   if (stageModelRenderer.value === 'live2d')
     return isTransparentByPixels.value
+
+  return true
+})
+const isTransparentForMouseEvents = computed(() => {
+  if (stagePaused.value || componentStateStage.value !== 'mounted' || !fadeOnHoverEnabled.value)
+    return true
+
+  if (stageModelRenderer.value === 'vrm')
+    return shouldUseThreeTransparencyHitTest.value ? isTransparentByThreeExact.value : true
+
+  if (stageModelRenderer.value === 'live2d')
+    return isTransparentByPixelsExact.value
 
   return true
 })
@@ -170,6 +192,20 @@ const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() =
     })
   }
 
+  if (stageModelRenderer.value === 'mmd') {
+    const phase = resolveComponentStateToRuntimePhase(componentStateStage.value, { hasModel })
+
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
+      renderer: 'mmd',
+      phase,
+      controlsLocked: hasModel ? phase !== 'mounted' : false,
+      previewAvailable: hasModel,
+      canCapturePreview: false,
+      updatedAt: Date.now(),
+    })
+  }
+
   if (stageModelRenderer.value === 'godot') {
     return createEmptyModelSettingsRuntimeSnapshot({
       ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
@@ -201,7 +237,10 @@ onMounted(async () => {
   clickThroughAvailable.value = !(await invokeIsLinux())
 })
 
-watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, hearingDialogOpen, fadeOnHoverEnabled, stagePaused, clickThroughAvailable], () => {
+// `isTransparentForMouseEvents` is watched alongside the fuzzy `isTransparent`: it samples a single
+// pixel, so it can flip near the model's edge while the radius-sampled value stays put, and the
+// click-through decision would otherwise keep a stale value until something else moved.
+watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, isTransparentForMouseEvents, hearingDialogOpen, fadeOnHoverEnabled, stagePaused, clickThroughAvailable], () => {
   const behavior = resolveStagePointerBehavior({
     stagePaused: stagePaused.value,
     hearingDialogOpen: hearingDialogOpen.value,
@@ -211,6 +250,7 @@ watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor
     clickThroughAvailable: clickThroughAvailable.value,
     isOutsideWindow: isOutsideWindow.value,
     isTransparent: isTransparent.value,
+    isTransparentForMouseEvents: isTransparentForMouseEvents.value,
   })
 
   isIgnoringMouseEvents.value = behavior.ignoreMouseEvents

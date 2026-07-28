@@ -116,6 +116,8 @@ export function useDataMaintenance() {
     // the watcher's ensure run against the pre-import index.
     if (payload.activeCardId && payload.activeCardId !== airiCardStore.activeCardId && airiCardStore.cards.has(payload.activeCardId))
       airiCardStore.activeCardId = payload.activeCardId
+
+    return payload
   }
 
   async function resetSettingsState() {

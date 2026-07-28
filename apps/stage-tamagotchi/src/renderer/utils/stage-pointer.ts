@@ -20,8 +20,16 @@ export interface StagePointerInputs {
    */
   clickThroughAvailable: boolean
   isOutsideWindow: boolean
-  /** The stage render is transparent at the cursor position (cursor not over the character). */
+  /**
+   * The stage render is transparent at the cursor position, sampled with a radius so the value
+   * stays stable near the character's edges. Drives fading only — too fuzzy to decide clicks.
+   */
   isTransparent: boolean
+  /**
+   * The stage render is transparent at exactly the cursor pixel. Only this may pass a click
+   * through, so visible model pixels stay interactive while fade-on-hover is on.
+   */
+  isTransparentForMouseEvents: boolean
 }
 
 export interface StagePointerBehavior {
@@ -67,7 +75,7 @@ export function resolveStagePointerBehavior(inputs: StagePointerInputs): StagePo
     return interactive
 
   return {
-    ignoreMouseEvents: inputs.fadeOnHoverEnabled && inputs.clickThroughAvailable,
+    ignoreMouseEvents: inputs.fadeOnHoverEnabled && inputs.clickThroughAvailable && inputs.isTransparentForMouseEvents,
     fadeOnCursorWithin: inputs.fadeOnHoverEnabled && !inputs.isOutsideWindow && !inputs.isTransparent,
     trackCursorTransparency: inputs.fadeOnHoverEnabled,
   }
