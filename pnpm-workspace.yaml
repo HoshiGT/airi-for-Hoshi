@@ -292,8 +292,12 @@ catalog:
   mediabunny: ^1.40.1
   meow: ^14.1.0
   meta-png: ^1.0.6
-  minecraft-data: 3.102.3
-  mineflayer: ^4.33.0
+  # Pinned together: minecraft-protocol keeps its own supportedVersions whitelist, and
+  # minecraft-data silently falls back to the major version when asked for one missing
+  # from it (1.21.11 -> 1.21, protocol 774 -> 767), which the server then rejects as
+  # incompatible. Both must be new enough to know the protocol we intend to speak.
+  minecraft-data: 3.111.0
+  mineflayer: ^4.37.1
   mineflayer-armor-manager: ^2.0.1
   mineflayer-auto-eat: ^5.0.3
   mineflayer-collectblock: ^1.6.0
@@ -327,6 +331,7 @@ catalog:
   posthog-node: ^5.39.4
   postprocessing: ^6.39.1
   prismarine-block: ^1.23.0
+  prismarine-chunk: ^1.39.0
   prismarine-entity: ^2.6.0
   prismarine-item: ^1.18.0
   prismarine-recipe: ^1.5.0

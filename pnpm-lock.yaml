@@ -790,11 +790,11 @@ catalogs:
       specifier: ^1.0.6
       version: 1.0.6
     minecraft-data:
-      specifier: 3.102.3
-      version: 3.102.3
+      specifier: 3.111.0
+      version: 3.111.0
     mineflayer:
-      specifier: ^4.33.0
-      version: 4.33.0
+      specifier: ^4.37.1
+      version: 4.37.1
     mineflayer-armor-manager:
       specifier: ^2.0.1
       version: 2.0.1
@@ -891,6 +891,9 @@ catalogs:
     prismarine-block:
       specifier: ^1.23.0
       version: 1.23.0
+    prismarine-chunk:
+      specifier: ^1.39.0
+      version: 1.39.0
     prismarine-entity:
       specifier: ^2.6.0
       version: 2.6.0
@@ -5164,13 +5167,13 @@ importers:
         version: 6.1.2
       minecraft-data:
         specifier: 'catalog:'
-        version: 3.102.3
+        version: 3.111.0
       mineflayer:
         specifier: 'catalog:'
-        version: 4.33.0(encoding@0.1.13)
+        version: 4.37.1(encoding@0.1.13)
       mineflayer-armor-manager:
         specifier: 'catalog:'
-        version: 2.0.1(mineflayer@4.33.0(encoding@0.1.13))
+        version: 2.0.1(mineflayer@4.37.1(encoding@0.1.13))
       mineflayer-auto-eat:
         specifier: 'catalog:'
         version: 5.0.3(encoding@0.1.13)
@@ -5189,6 +5192,9 @@ importers:
       nanoid:
         specifier: 'catalog:'
         version: 5.1.11
+      playwright:
+        specifier: 'catalog:'
+        version: 1.60.0
       prismarine-block:
         specifier: 'catalog:'
         version: 1.23.0
@@ -5229,6 +5235,9 @@ importers:
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
+      prismarine-chunk:
+        specifier: 'catalog:'
+        version: 1.39.0(minecraft-data@3.111.0)
 
   services/qq-bot:
     dependencies:
@@ -11705,6 +11714,10 @@ packages:
   '@xboxreplay/xboxlive-auth@3.3.3':
     resolution: {integrity: sha512-j0AU8pW10LM8O68CTZ5QHnvOjSsnPICy0oQcP7zyM7eWkDQ/InkiQiirQKsPn1XRYDl4ccNu0WM582s3UKwcBg==}
 
+  '@xboxreplay/xboxlive-auth@5.1.0':
+    resolution: {integrity: sha512-UngHHsehZbiTjyyNmo8HvdoUDKMID1U9uVfrpFWUK/2UxPuVTKy5n+CzZQ3S488sW5vOhgh0lHqqynT8ouwgvw==}
+    engines: {node: '>=16.0.0'}
+
   '@xmldom/xmldom@0.8.11':
     resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
     engines: {node: '>=10.0.0'}
@@ -15848,14 +15861,18 @@ packages:
   minecraft-data@2.221.0:
     resolution: {integrity: sha512-0AhqzbIKb6WqPSF6qBevaPryeWOz545hLxt6q+gfJF8YIQX/YfkyX/nXWhl+pSIS2rTBcQ0RJkRCtTeRzQwHDA==}
 
-  minecraft-data@3.102.3:
-    resolution: {integrity: sha512-JxUPTUlamQ04GSK7YI3657BRurHLBRAhsmPb4gajd4z/p6t3LJh4l0HWIyNHRpJbQiUCIjn+mhos5oB+yqH0mQ==}
+  minecraft-data@3.111.0:
+    resolution: {integrity: sha512-0kKHqNZL/D1IbH7tJXBJ3z7YSn1/ylnWWR7X2zFwtEV+yr23nimItpGjP3o8UaLYrC+OV1gKLFQoew03XvJyoA==}
 
   minecraft-folder-path@1.2.0:
     resolution: {integrity: sha512-qaUSbKWoOsH9brn0JQuBhxNAzTDMwrOXorwuRxdJKKKDYvZhtml+6GVCUrY5HRiEsieBEjCUnhVpDuQiKsiFaw==}
 
   minecraft-protocol@1.62.0:
     resolution: {integrity: sha512-+Rm7DdwgDiiq5ASXLNixs6TA7tsNn8zJAlhmOh0ccfuMYnlr/5+FliKacf87ZO6MPs5p/mJitIAwONbfqiX2+A==}
+    engines: {node: '>=22'}
+
+  minecraft-protocol@1.66.2:
+    resolution: {integrity: sha512-keY1IY1E2AeurcekCfcXrg0TDbykGVFiMe1E4wR8QkNtQRieNwfr2xaF3g3vT9ChkwzvENqp3jxgmtFCKSUKPg==}
     engines: {node: '>=22'}
 
   mineflayer-armor-manager@2.0.1:
@@ -15886,8 +15903,8 @@ packages:
     resolution: {integrity: sha512-IFFy4NgF24FU2PkAwazJphl2F+3gpbpN578ex0sq1XfcBBRge3kCz1UC2KDMjKI+V/8vffOL+OEnug9jt3f7Vw==}
     engines: {node: '>=14'}
 
-  mineflayer@4.33.0:
-    resolution: {integrity: sha512-tysUKVhUpEvHKDn8Awex/wz8WYyRGYrl6EujOVLJsGOU775AwKcapBVAS1BrP0UbM2di6MDwb74muGAFytY+TQ==}
+  mineflayer@4.37.1:
+    resolution: {integrity: sha512-kchZCJb1znzz8ZhE0+gLQ3e2t/9xUsqUy/IM/sGfceINxi3h6KXKY9luaUEa59vnD/x0OKwYdERY4sscm0ErNQ==}
     engines: {node: '>=22'}
 
   minimatch@10.2.5:
@@ -16762,6 +16779,9 @@ packages:
 
   prismarine-auth@2.7.0:
     resolution: {integrity: sha512-L8wTF6sdtnN6hViPNy+Nx39a8iQBwR5iO92AWCiym5cSXp/92pmnuwnTdcmNDWyqq6zY4hbibVGYhgLA1Ox8sQ==}
+
+  prismarine-auth@3.1.1:
+    resolution: {integrity: sha512-NuNrMGZdoigFKsvi1ZZgAEvNYNuE5qe6lo/tw+bqeNbkhpjHC0u1JNxLEujnfqduXI18e19PvUtWNMDl/gH7yw==}
 
   prismarine-biome@1.3.0:
     resolution: {integrity: sha512-GY6nZxq93mTErT7jD7jt8YS1aPrOakbJHh39seYsJFXvueIOdHAmW16kYQVrTVMW5MlWLQVxV/EquRwOgr4MnQ==}
@@ -26136,6 +26156,8 @@ snapshots:
       '@xboxreplay/errors': 0.1.0
       axios: feaxios@0.0.23
 
+  '@xboxreplay/xboxlive-auth@5.1.0': {}
+
   '@xmldom/xmldom@0.8.11': {}
 
   '@xsai-ext/providers@0.4.4':
@@ -30800,7 +30822,7 @@ snapshots:
 
   minecraft-data@2.221.0: {}
 
-  minecraft-data@3.102.3: {}
+  minecraft-data@3.111.0: {}
 
   minecraft-folder-path@1.2.0: {}
 
@@ -30813,7 +30835,7 @@ snapshots:
       debug: 4.4.3(supports-color@10.2.2)
       endian-toggle: 0.0.0
       lodash.merge: 4.6.2
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       minecraft-folder-path: 1.2.0
       node-fetch: 2.7.0(encoding@0.1.13)
       node-rsa: 0.4.2
@@ -30829,22 +30851,47 @@ snapshots:
       - encoding
       - supports-color
 
-  mineflayer-armor-manager@2.0.1(mineflayer@4.33.0(encoding@0.1.13)):
+  minecraft-protocol@1.66.2(encoding@0.1.13):
     dependencies:
-      minecraft-data: 3.102.3
-      mineflayer: 4.33.0(encoding@0.1.13)
+      '@types/node-rsa': 1.1.4
+      '@types/readable-stream': 4.0.23
+      aes-js: 3.1.2
+      buffer-equal: 1.0.1
+      debug: 4.4.3(supports-color@10.2.2)
+      endian-toggle: 0.0.0
+      lodash.merge: 4.6.2
+      minecraft-data: 3.111.0
+      minecraft-folder-path: 1.2.0
+      node-fetch: 2.7.0(encoding@0.1.13)
+      node-rsa: 0.4.2
+      prismarine-auth: 3.1.1
+      prismarine-chat: 1.12.0
+      prismarine-nbt: 2.8.0
+      prismarine-realms: 1.4.1(encoding@0.1.13)
+      protodef: 1.19.0
+      readable-stream: 4.7.0
+      uuid-1345: 1.0.2
+      yggdrasil: 1.7.0(encoding@0.1.13)
+    transitivePeerDependencies:
+      - encoding
+      - supports-color
+
+  mineflayer-armor-manager@2.0.1(mineflayer@4.37.1(encoding@0.1.13)):
+    dependencies:
+      minecraft-data: 3.111.0
+      mineflayer: 4.37.1(encoding@0.1.13)
 
   mineflayer-auto-eat@5.0.3(encoding@0.1.13):
     dependencies:
       '@nxg-org/mineflayer-util-plugin': 1.8.4
-      mineflayer: 4.33.0(encoding@0.1.13)
+      mineflayer: 4.37.1(encoding@0.1.13)
     transitivePeerDependencies:
       - encoding
       - supports-color
 
   mineflayer-collectblock@1.6.0(encoding@0.1.13):
     dependencies:
-      mineflayer: 4.33.0(encoding@0.1.13)
+      mineflayer: 4.37.1(encoding@0.1.13)
       mineflayer-pathfinder: 2.4.5(patch_hash=4bbfdca823ab48b74086e6e7d4b2f9baf5ee7c0ba9aee0c279b3c91c50bfd797)
       mineflayer-tool: 1.2.0(encoding@0.1.13)
     transitivePeerDependencies:
@@ -30853,7 +30900,7 @@ snapshots:
 
   mineflayer-pathfinder@2.4.5(patch_hash=4bbfdca823ab48b74086e6e7d4b2f9baf5ee7c0ba9aee0c279b3c91c50bfd797):
     dependencies:
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       prismarine-block: 1.23.0
       prismarine-entity: 2.6.0
       prismarine-item: 1.18.0
@@ -30863,7 +30910,7 @@ snapshots:
 
   mineflayer-pvp@1.3.2(encoding@0.1.13)(prismarine-registry@1.11.0):
     dependencies:
-      mineflayer: 4.33.0(encoding@0.1.13)
+      mineflayer: 4.37.1(encoding@0.1.13)
       mineflayer-pathfinder: 2.4.5(patch_hash=4bbfdca823ab48b74086e6e7d4b2f9baf5ee7c0ba9aee0c279b3c91c50bfd797)
       mineflayer-utils: 0.1.4(encoding@0.1.13)(prismarine-registry@1.11.0)
     transitivePeerDependencies:
@@ -30873,7 +30920,7 @@ snapshots:
 
   mineflayer-tool@1.2.0(encoding@0.1.13):
     dependencies:
-      mineflayer: 4.33.0(encoding@0.1.13)
+      mineflayer: 4.37.1(encoding@0.1.13)
       mineflayer-pathfinder: 2.4.5(patch_hash=4bbfdca823ab48b74086e6e7d4b2f9baf5ee7c0ba9aee0c279b3c91c50bfd797)
       prismarine-nbt: 2.8.0
     transitivePeerDependencies:
@@ -30914,14 +30961,15 @@ snapshots:
       - prismarine-registry
       - supports-color
 
-  mineflayer@4.33.0(encoding@0.1.13):
+  mineflayer@4.37.1(encoding@0.1.13):
     dependencies:
-      minecraft-data: 3.102.3
-      minecraft-protocol: 1.62.0(encoding@0.1.13)
-      prismarine-biome: 1.3.0(minecraft-data@3.102.3)(prismarine-registry@1.11.0)
+      minecraft-data: 3.111.0
+      minecraft-protocol: 1.66.2(encoding@0.1.13)
+      mojangson: 2.0.4
+      prismarine-biome: 1.3.0(minecraft-data@3.111.0)(prismarine-registry@1.11.0)
       prismarine-block: 1.23.0
       prismarine-chat: 1.12.0
-      prismarine-chunk: 1.39.0(minecraft-data@3.102.3)
+      prismarine-chunk: 1.39.0(minecraft-data@3.111.0)
       prismarine-entity: 2.6.0
       prismarine-item: 1.18.0
       prismarine-nbt: 2.8.0
@@ -30932,6 +30980,7 @@ snapshots:
       prismarine-world: 3.6.3
       protodef: 1.19.0
       typed-emitter: 1.4.0
+      uuid-1345: 1.0.2
       vec3: 0.1.10
     transitivePeerDependencies:
       - encoding
@@ -31927,20 +31976,30 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  prismarine-auth@3.1.1:
+    dependencies:
+      '@azure/msal-node': 2.16.3
+      '@xboxreplay/xboxlive-auth': 5.1.0
+      debug: 4.4.3(supports-color@10.2.2)
+      smart-buffer: 4.2.0
+      uuid-1345: 1.0.2
+    transitivePeerDependencies:
+      - supports-color
+
   prismarine-biome@1.3.0(minecraft-data@2.221.0)(prismarine-registry@1.11.0):
     dependencies:
       minecraft-data: 2.221.0
       prismarine-registry: 1.11.0
 
-  prismarine-biome@1.3.0(minecraft-data@3.102.3)(prismarine-registry@1.11.0):
+  prismarine-biome@1.3.0(minecraft-data@3.111.0)(prismarine-registry@1.11.0):
     dependencies:
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       prismarine-registry: 1.11.0
 
   prismarine-block@1.23.0:
     dependencies:
-      minecraft-data: 3.102.3
-      prismarine-biome: 1.3.0(minecraft-data@3.102.3)(prismarine-registry@1.11.0)
+      minecraft-data: 3.111.0
+      prismarine-biome: 1.3.0(minecraft-data@3.111.0)(prismarine-registry@1.11.0)
       prismarine-chat: 1.12.0
       prismarine-item: 1.18.0
       prismarine-nbt: 2.8.0
@@ -31965,9 +32024,9 @@ snapshots:
     transitivePeerDependencies:
       - minecraft-data
 
-  prismarine-chunk@1.39.0(minecraft-data@3.102.3):
+  prismarine-chunk@1.39.0(minecraft-data@3.111.0):
     dependencies:
-      prismarine-biome: 1.3.0(minecraft-data@3.102.3)(prismarine-registry@1.11.0)
+      prismarine-biome: 1.3.0(minecraft-data@3.111.0)(prismarine-registry@1.11.0)
       prismarine-block: 1.23.0
       prismarine-nbt: 2.8.0
       prismarine-registry: 1.11.0
@@ -32000,7 +32059,7 @@ snapshots:
 
   prismarine-physics@1.10.0:
     dependencies:
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       prismarine-nbt: 2.8.0
       vec3: 0.1.10
 
@@ -32018,7 +32077,7 @@ snapshots:
 
   prismarine-registry@1.11.0:
     dependencies:
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       prismarine-block: 1.23.0
       prismarine-nbt: 2.8.0
 
@@ -32027,9 +32086,9 @@ snapshots:
       '@tweenjs/tween.js': 23.1.3
       compression: 1.8.1
       express: 4.22.1
-      minecraft-data: 3.102.3
+      minecraft-data: 3.111.0
       prismarine-block: 1.23.0
-      prismarine-chunk: 1.39.0(minecraft-data@3.102.3)
+      prismarine-chunk: 1.39.0(minecraft-data@3.111.0)
       prismarine-world: 3.6.3
       socket.io: 4.8.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       socket.io-client: 4.8.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
