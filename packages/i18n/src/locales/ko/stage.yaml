@@ -15,6 +15,7 @@ chat:
     cloud-badge: Synced to cloud
     new-chat-fallback: New chat
     delete: Delete conversation
+    purge-empty: Clean up empty chats
 message: 듣고 있어요...
 send-mode:
   title: Send key

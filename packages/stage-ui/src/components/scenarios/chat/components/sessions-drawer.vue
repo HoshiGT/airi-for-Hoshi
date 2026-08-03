@@ -29,6 +29,7 @@ const { activeModel } = storeToRefs(useConsciousnessStore())
 const { trackChatSessionSelected, trackChatSessionStarted } = useAnalytics()
 
 const isCreatingSession = ref(false)
+const isPurging = ref(false)
 
 useResizeObserver(document.documentElement, () => screenSafeArea.update())
 onMounted(() => screenSafeArea.update())
@@ -144,6 +145,18 @@ async function startNewSession() {
   }
 }
 
+async function purgeEmpty() {
+  if (isPurging.value)
+    return
+  isPurging.value = true
+  try {
+    await chatSession.purgeEmptySessions()
+  }
+  finally {
+    isPurging.value = false
+  }
+}
+
 async function deleteRow(event: Event, sessionId: string) {
   event.stopPropagation()
   await chatSession.deleteSession(sessionId)
@@ -184,6 +197,19 @@ watch(showDialog, async (open) => {
           {{ t('stage.chat.sessions.title') }}
         </span>
         <div :class="['flex items-center gap-1']">
+          <button
+            :class="[
+              'h-7 w-7 flex items-center justify-center rounded-lg',
+              'text-neutral-400 hover:text-red-500 hover:bg-red-500/10',
+              'dark:hover:text-red-400 dark:hover:bg-red-500/10',
+              'transition-colors',
+            ]"
+            :disabled="isPurging"
+            :title="t('stage.chat.sessions.purge-empty')"
+            @click="purgeEmpty"
+          >
+            <div class="i-solar:broom-bold text-base" />
+          </button>
           <button
             :class="[
               'h-7 w-7 flex items-center justify-center rounded-lg',
@@ -284,18 +310,33 @@ watch(showDialog, async (open) => {
           <DrawerTitle :class="['text-base font-medium text-neutral-700 dark:text-neutral-200']">
             {{ t('stage.chat.sessions.title') }}
           </DrawerTitle>
-          <button
-            :class="[
-              'rounded-lg px-3 py-1.5 text-xs font-medium',
-              'bg-primary-100/60 text-primary-700 dark:bg-primary-900/40 dark:text-primary-200',
-              'hover:bg-primary-200/70 dark:hover:bg-primary-800/50',
-              'transition-colors',
-            ]"
-            :disabled="isCreatingSession"
-            @click="startNewSession"
-          >
-            {{ t('stage.chat.sessions.new') }}
-          </button>
+          <div :class="['flex items-center gap-2']">
+            <button
+              :class="[
+                'rounded-lg px-3 py-1.5 text-xs font-medium',
+                'bg-red-100/60 text-red-700 dark:bg-red-900/40 dark:text-red-200',
+                'hover:bg-red-200/70 dark:hover:bg-red-800/50',
+                'transition-colors',
+              ]"
+              :disabled="isPurging"
+              :title="t('stage.chat.sessions.purge-empty')"
+              @click="purgeEmpty"
+            >
+              {{ t('stage.chat.sessions.purge-empty') }}
+            </button>
+            <button
+              :class="[
+                'rounded-lg px-3 py-1.5 text-xs font-medium',
+                'bg-primary-100/60 text-primary-700 dark:bg-primary-900/40 dark:text-primary-200',
+                'hover:bg-primary-200/70 dark:hover:bg-primary-800/50',
+                'transition-colors',
+              ]"
+              :disabled="isCreatingSession"
+              @click="startNewSession"
+            >
+              {{ t('stage.chat.sessions.new') }}
+            </button>
+          </div>
         </div>
         <div :class="['flex-1 overflow-y-auto px-2 pb-2']">
           <div v-if="rows.length === 0" :class="['p-6 text-center text-sm text-neutral-500 dark:text-neutral-400']">

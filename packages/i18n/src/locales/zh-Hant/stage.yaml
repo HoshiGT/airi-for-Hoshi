@@ -15,6 +15,7 @@ chat:
     cloud-badge: 已同步至雲端
     new-chat-fallback: 新對話
     delete: 刪除對話
+    purge-empty: 清理空對話
 message: 說點什麼...
 send-mode:
   title: 傳送按鍵

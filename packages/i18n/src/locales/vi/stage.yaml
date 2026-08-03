@@ -15,6 +15,7 @@ chat:
     cloud-badge: Đã đồng bộ đám mây
     new-chat-fallback: Cuộc trò chuyện mới
     delete: Xóa đoạn hội thoại
+    purge-empty: Dọn dẹp các cuộc trò chuyện trống
 message: Nói gì đó...
 send-mode:
   title: Gửi key

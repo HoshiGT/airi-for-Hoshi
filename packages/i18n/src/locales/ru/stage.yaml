@@ -15,6 +15,7 @@ chat:
     cloud-badge: Синхронизировано с облаком
     new-chat-fallback: Новый чат
     delete: Удалить диалог
+    purge-empty: Очистить пустые чаты
 message: Спроси что-нибудь
 send-mode:
   title: Отправить ключ

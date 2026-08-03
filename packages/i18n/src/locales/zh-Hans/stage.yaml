@@ -16,6 +16,7 @@ chat:
     cloud-badge: 已同步到云
     new-chat-fallback: 新建对话
     delete: 删除对话
+    purge-empty: 清理空对话
 message: 说点什么...
 send-mode:
   title: 发送键值

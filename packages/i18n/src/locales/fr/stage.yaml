@@ -15,6 +15,7 @@ chat:
     cloud-badge: Synchronisé dans le cloud
     new-chat-fallback: Nouvelle conversation
     delete: Supprimer conversation
+    purge-empty: Nettoyer les conversations vides
 message: Dites quelque chose...
 send-mode:
   title: Envoyer la clef

@@ -15,6 +15,7 @@ chat:
     cloud-badge: Synced to cloud
     new-chat-fallback: New chat
     delete: Delete conversation
+    purge-empty: 空の会話を削除
 message: 何か話しかけてみましょう…
 send-mode:
   title: キーを送信

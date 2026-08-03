@@ -596,6 +596,31 @@ export const useChatSessionStore = defineStore('chat-session', () => {
   }
 
   /**
+   * Delete every session that has no non-system messages. Useful for
+   * cleaning up "ghost" sessions created by accidental taps or aborted
+   * forks. The currently active session is kept even if empty so the
+   * user never lands on a void.
+   */
+  async function purgeEmptySessions(): Promise<number> {
+    const ids = Object.keys(sessionMetas.value)
+    // Load all sessions so we can inspect their messages.
+    await Promise.all(ids.map(id => loadSession(id)))
+    let purged = 0
+    for (const id of ids) {
+      if (id === activeSessionId.value)
+        continue
+      // Re-read after load; missing or empty message arrays count as empty.
+      const msgs = sessionMessages.value[id] ?? []
+      const hasContent = msgs.some(m => m.role !== 'system')
+      if (!hasContent) {
+        await deleteSession(id)
+        purged++
+      }
+    }
+    return purged
+  }
+
+  /**
    * Load the per-user index, pick (or mint) the active session for the
    * current character, and hydrate it into memory. Reentrant: concurrent
    * callers share a single in-flight promise so a rapid `[userId, characterId]`
@@ -1684,6 +1709,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     getSessionGenerationValue,
 
     forkSession,
+    purgeEmptySessions,
     exportSessions,
     importSessions,
     rehydrateFromDisk,
