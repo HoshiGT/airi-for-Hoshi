@@ -90,10 +90,11 @@ function buildStickerToolsetPrompt(stickers: StickerMeta[]): string {
     ...stickers.map(sticker => `- ${sticker.name}: ${sticker.description || '(no description)'}`),
     '',
     'Rules:',
-    '- Send at most ONE sticker per reply, and only when it genuinely matches the mood of what you are saying.',
+    '- MOST replies should NOT include a sticker. Only send one when the emotion is strong or the moment truly calls for it.',
+    '- Send at most ONE sticker per reply.',
     '- The name inside the marker must match one of the listed names EXACTLY. Never invent sticker names.',
     '- Place the marker where the sticker should appear, usually at the end of the sentence it reacts to.',
-    '- Most replies need no sticker at all; treat them as a spice, not a habit.',
+    '- Think of stickers like seasoning: a little goes a long way. Sending one every reply makes them meaningless.',
   ]
   return lines.join('\n')
 }
