@@ -617,6 +617,21 @@ export const useChatSessionStore = defineStore('chat-session', () => {
         purged++
       }
     }
+
+    // Scrub the index of orphaned session entries that deleteSession might
+    // have missed (e.g. when meta.characterId diverged from the character
+    // that actually owns the entry in the index).
+    if (index.value && purged > 0) {
+      for (const character of Object.values(index.value.characters)) {
+        for (const sessionId of Object.keys(character.sessions)) {
+          if (!sessionMetas.value[sessionId]) {
+            delete character.sessions[sessionId]
+          }
+        }
+      }
+      await persistIndex()
+    }
+
     return purged
   }
 
