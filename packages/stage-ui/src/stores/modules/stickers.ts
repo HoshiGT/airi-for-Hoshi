@@ -83,18 +83,16 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 
 function buildStickerToolsetPrompt(stickers: StickerMeta[]): string {
   const lines = [
-    'You have a sticker (表情包) library. You can send a sticker inline by writing a marker in your reply, e.g.:',
+    'You have a sticker (表情包) library. By default, do NOT send stickers. Only occasionally, when you feel a genuinely strong emotion (excitement, surprise, sympathy, playfulness), you may include ONE sticker by writing a marker like:',
     `${formatStickerMarker(stickers[0]?.name ?? '名字')}`,
     '',
     'Available stickers (marker name: meaning):',
     ...stickers.map(sticker => `- ${sticker.name}: ${sticker.description || '(no description)'}`),
     '',
     'Rules:',
-    '- MOST replies should NOT include a sticker. Only send one when the emotion is strong or the moment truly calls for it.',
-    '- Send at most ONE sticker per reply.',
+    '- The default is NO sticker. Aim for roughly 1 in every 4-5 replies at most.',
     '- The name inside the marker must match one of the listed names EXACTLY. Never invent sticker names.',
-    '- Place the marker where the sticker should appear, usually at the end of the sentence it reacts to.',
-    '- Think of stickers like seasoning: a little goes a long way. Sending one every reply makes them meaningless.',
+    '- Place the marker at the end of the sentence it reacts to.',
   ]
   return lines.join('\n')
 }
