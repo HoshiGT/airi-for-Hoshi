@@ -20,6 +20,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'copy'): void
+  (e: 'branch'): void
   (e: 'delete'): void
 }>()
 
@@ -57,6 +58,7 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
       :copy-text="copyText"
       placement="left"
       @copy="emit('copy')"
+      @branch="emit('branch')"
       @delete="emit('delete')"
     >
       <template #default="{ setMeasuredElement }">

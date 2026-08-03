@@ -218,6 +218,14 @@ onMounted(() => {
   backgroundStore.initializeStore()
 })
 
+async function handleBranchMessage(index: number) {
+  await chatSession.forkSession({
+    fromSessionId: chatSession.activeSessionId,
+    atIndex: index + 1,
+    setActive: true,
+  })
+}
+
 async function handleRetryMessage(index: number) {
   await chatSyncStore.requestRetry({
     sessionId: chatSession.activeSessionId,
@@ -274,6 +282,7 @@ async function handleCleanupMessages() {
         :tool-call-renderers="toolCallRenderers"
         @delete-message="handleDeleteMessage($event.index)"
         @retry-message="handleRetryMessage($event.index)"
+        @branch-message="handleBranchMessage($event.index)"
         @tool-call-rerun="handleToolCallRerun"
       />
     </div>

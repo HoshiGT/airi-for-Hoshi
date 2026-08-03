@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: Retry
+    branch: Branch
   message:
     yesterday: Yesterday
     character-name:

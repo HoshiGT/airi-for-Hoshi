@@ -38,6 +38,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'copy'): void
+  (e: 'branch'): void
   (e: 'delete'): void
   (e: 'toolCallRerun', payload: { toolCallId: string, toolName: string, args: string }): void
 }>()
@@ -110,7 +111,9 @@ const timeText = computed(() => formatChatTimestamp(props.message.createdAt, { y
       v-if="showBubble"
       :copy-text="copyText"
       :can-delete="!showPlaceholder"
+      :can-branch="!showPlaceholder"
       @copy="emit('copy')"
+      @branch="emit('branch')"
       @delete="emit('delete')"
     >
       <template #default="{ setMeasuredElement }">

@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: 重试
+    branch: 分支
   message:
     yesterday: 昨天
     character-name:

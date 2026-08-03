@@ -2,6 +2,7 @@
 import type { ChatHistoryItem } from '@proj-airi/stage-ui/types/chat'
 
 import { ChatHistory } from '@proj-airi/stage-ui/components'
+import { ChatSessionsDrawer } from '@proj-airi/stage-ui/components/scenarios/chat'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -18,10 +19,12 @@ import { useChatToolCallRerun } from '../../composables/useChatToolCallRerun'
 
 const { isReady } = useDeferredMount()
 const { sending } = storeToRefs(useChatOrchestratorStore())
-const { messages } = storeToRefs(useChatSessionStore())
+const chatSession = useChatSessionStore()
+const { messages } = storeToRefs(chatSession)
 const { streamingMessage } = storeToRefs(useChatStreamStore())
 
 const isLoading = ref(true)
+const sessionsDrawerOpen = ref(false)
 const historyMessages = computed(() => messages.value as unknown as ChatHistoryItem[])
 const { trackChatMessageDeleted } = useAnalytics()
 const { rerunToolCall } = useChatToolCallRerun()
@@ -34,12 +37,21 @@ function handleDeleteMessage(index: number) {
     message_role: message?.role ?? 'unknown',
   })
 }
+
+async function handleBranchMessage(index: number) {
+  await chatSession.forkSession({
+    fromSessionId: chatSession.activeSessionId,
+    atIndex: index + 1,
+    setActive: true,
+  })
+}
 </script>
 
 <template>
   <div flex="col" items-center pt-4>
-    <div h-full max-h="[85vh]" w-full py="4">
-      <ChatContainer>
+    <div h-full max-h="[85vh]" w-full py="4" flex flex-row overflow-hidden>
+      <ChatSessionsDrawer v-model="sessionsDrawerOpen" />
+      <ChatContainer class="min-w-0 flex-1">
         <div
           v-if="isLoading"
           absolute left-0 top-0 h-1 w-full overflow-hidden rounded-t-xl
@@ -56,6 +68,7 @@ function handleDeleteMessage(index: number) {
             h-full
             variant="desktop"
             @delete-message="handleDeleteMessage($event.index)"
+            @branch-message="handleBranchMessage($event.index)"
             @tool-call-rerun="rerunToolCall"
             @vue:mounted="isLoading = false"
           />
@@ -64,7 +77,7 @@ function handleDeleteMessage(index: number) {
       </ChatContainer>
     </div>
 
-    <ChatActionButtons />
+    <ChatActionButtons v-model:sessions-open="sessionsDrawerOpen" />
   </div>
 </template>
 

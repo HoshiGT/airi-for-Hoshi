@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ChatSessionsDrawer } from '@proj-airi/stage-ui/components/scenarios/chat'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
 import { useChatMaintenanceStore } from '@proj-airi/stage-ui/stores/chat/maintenance'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -13,6 +12,8 @@ import ViewControls from '../Layouts/InteractiveArea/Actions/ViewControls.vue'
 import { useStopSpeakingButton } from '../../composables/useStopSpeakingButton'
 import { BackgroundDialogPicker } from '../Backgrounds'
 
+const sessionsOpen = defineModel<boolean>('sessionsOpen', { default: false })
+
 const { cleanupMessages } = useChatMaintenanceStore()
 const { messages } = storeToRefs(useChatSessionStore())
 const { trackChatMessagesCleared } = useAnalytics()
@@ -21,7 +22,6 @@ const { speechMuted, toggleSpeechMuted } = useStopSpeakingButton()
 const { t } = useI18n()
 
 const backgroundDialogOpen = ref(false)
-const sessionsDrawerOpen = ref(false)
 
 function handleCleanupMessages() {
   const messageCount = messages.value.filter(message => message.role !== 'system').length
@@ -35,19 +35,20 @@ function handleCleanupMessages() {
 
 <template>
   <BackgroundDialogPicker v-model="backgroundDialogOpen" />
-  <ChatSessionsDrawer v-model="sessionsDrawerOpen" />
   <div absolute bottom--8 right-0 flex gap-2>
     <div flex gap-1>
       <button
         data-testid="conversation-selector-button"
         :class="[
           'max-h-[10lh] min-h-[1lh] flex items-center justify-center rounded-md p-2 outline-none',
-          'bg-neutral-100 text-lg text-neutral-500 transition-colors transition-transform active:scale-95',
-          'hover:text-primary-500 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:text-primary-400',
+          'text-lg transition-colors transition-transform active:scale-95',
+          sessionsOpen
+            ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/40 dark:text-primary-300'
+            : 'bg-neutral-100 text-neutral-500 hover:text-primary-500 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:text-primary-400',
         ]"
         :title="t('stage.chat.sessions.title')"
         :aria-label="t('stage.chat.sessions.title')"
-        @click="sessionsDrawerOpen = true"
+        @click="sessionsOpen = !sessionsOpen"
       >
         <div class="i-solar:chat-line-bold-duotone" />
       </button>

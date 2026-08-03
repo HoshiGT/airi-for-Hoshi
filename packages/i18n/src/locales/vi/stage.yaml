@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: Thử lại
+    branch: Branch
   message:
     character-name:
       airi: AIRI

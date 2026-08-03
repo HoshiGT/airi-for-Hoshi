@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: Reintentar
+    branch: Branch
   message:
     character-name:
       airi: AIRI

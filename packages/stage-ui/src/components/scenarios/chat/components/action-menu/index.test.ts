@@ -20,6 +20,7 @@ describe('createChatActionMenuItems', () => {
     const items = createChatActionMenuItems({
       canCopy: true,
       canRetry: true,
+      canBranch: false,
       canDelete: true,
     })
 
@@ -27,21 +28,27 @@ describe('createChatActionMenuItems', () => {
     expect(items[1]?.label).toBe('Retry')
   })
 
-  /**
-   * @example
-   * it('omits retry when retry is unavailable', () => {
-   *   const items = createChatActionMenuItems({ canCopy: true, canRetry: false, canDelete: true })
-   *   expect(items.map(item => item.action)).toEqual(['copy', 'delete'])
-   * })
-   */
   it('omits retry when retry is unavailable', () => {
     const items = createChatActionMenuItems({
       canCopy: true,
       canRetry: false,
+      canBranch: false,
       canDelete: true,
     })
 
     expect(items.map(item => item.action)).toEqual(['copy', 'delete'])
+  })
+
+  it('includes branch between retry and delete when branch is available', () => {
+    const items = createChatActionMenuItems({
+      canCopy: true,
+      canRetry: false,
+      canBranch: true,
+      canDelete: true,
+    })
+
+    expect(items.map(item => item.action)).toEqual(['copy', 'branch', 'delete'])
+    expect(items[1]?.label).toBe('Branch')
   })
 })
 

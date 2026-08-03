@@ -33,6 +33,7 @@ const emit = defineEmits<{
   (e: 'copyMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
   (e: 'deleteMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
   (e: 'retryMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
+  (e: 'branchMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
   (e: 'toolCallRerun', payload: { message: ChatHistoryItem, index: number, key: string | number, toolCallId: string, toolName: string, args: string }): void
 }>()
 
@@ -103,6 +104,14 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
   })
 }
 
+function emitBranchMessage(message: ChatHistoryItem, index: number) {
+  emit('branchMessage', {
+    message,
+    index,
+    key: getChatHistoryItemKey(message, index),
+  })
+}
+
 function emitToolCallRerun(
   message: ChatHistoryItem,
   index: number,
@@ -135,6 +144,7 @@ function emitToolCallRerun(
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
           @retry="emitRetryMessage(message, index)"
+          @branch="emitBranchMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"
         />
         <ChatAssistantItem
@@ -147,6 +157,7 @@ function emitToolCallRerun(
           :variant="variant"
           :tool-call-renderers="toolCallRenderers"
           @copy="emitCopyMessage(message, index)"
+          @branch="emitBranchMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"
           @tool-call-rerun="emitToolCallRerun(message, index, $event)"
         />
@@ -157,6 +168,7 @@ function emitToolCallRerun(
           :yesterday-label="labels.yesterday"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
+          @branch="emitBranchMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"
         />
       </div>

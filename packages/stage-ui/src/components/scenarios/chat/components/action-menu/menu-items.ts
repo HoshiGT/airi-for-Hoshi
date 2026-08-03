@@ -1,7 +1,7 @@
 /**
  * Represents supported chat message action identifiers.
  */
-export type ChatActionMenuAction = 'copy' | 'retry' | 'delete'
+export type ChatActionMenuAction = 'copy' | 'retry' | 'branch' | 'delete'
 
 /**
  * Represents one visible action in a chat message action menu.
@@ -55,8 +55,10 @@ export interface ChatActionMenuTriggerState {
 export function createChatActionMenuItems(options: {
   canCopy: boolean
   canRetry: boolean
+  canBranch: boolean
   canDelete: boolean
   retryLabel?: string
+  branchLabel?: string
 }): ChatActionMenuItem[] {
   return [
     options.canCopy
@@ -71,6 +73,13 @@ export function createChatActionMenuItems(options: {
           action: 'retry',
           label: options.retryLabel ?? 'Retry',
           icon: 'i-solar:refresh-bold',
+        }
+      : null,
+    options.canBranch
+      ? {
+          action: 'branch',
+          label: options.branchLabel ?? 'Branch',
+          icon: 'i-solar:branching-paths-up-bold',
         }
       : null,
     options.canDelete

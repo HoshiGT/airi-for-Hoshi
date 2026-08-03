@@ -1,6 +1,7 @@
 chat:
   actions:
     retry: 重試
+    branch: 分支
   message:
     character-name:
       airi: AIRI

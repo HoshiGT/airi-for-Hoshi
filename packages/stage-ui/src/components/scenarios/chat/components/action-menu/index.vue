@@ -32,6 +32,7 @@ import { chatScrollContainerKey } from '../../constants'
 const props = withDefaults(defineProps<{
   canCopy?: boolean
   canRetry?: boolean
+  canBranch?: boolean
   canDelete?: boolean
   copyText?: string
   menuLabel?: string
@@ -39,6 +40,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   canCopy: true,
   canRetry: false,
+  canBranch: true,
   canDelete: true,
   copyText: '',
   menuLabel: 'Message actions',
@@ -48,6 +50,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'retry'): void
+  (e: 'branch'): void
   (e: 'delete'): void
 }>()
 defineSlots<{
@@ -91,8 +94,10 @@ const copyFeedbackActive = shallowRef(false)
 const menuItems = computed(() => createChatActionMenuItems({
   canCopy: props.canCopy && props.copyText.trim().length > 0,
   canRetry: props.canRetry,
+  canBranch: props.canBranch,
   canDelete: props.canDelete,
   retryLabel: t('stage.chat.actions.retry'),
+  branchLabel: t('stage.chat.actions.branch'),
 }))
 const triggerState = computed(() => createChatActionMenuTriggerState({
   copyFeedbackActive: copyFeedbackActive.value,
@@ -271,6 +276,11 @@ async function handleAction(action: ChatActionMenuAction) {
 
   if (action === 'retry') {
     emit('retry')
+    return
+  }
+
+  if (action === 'branch') {
+    emit('branch')
     return
   }
 

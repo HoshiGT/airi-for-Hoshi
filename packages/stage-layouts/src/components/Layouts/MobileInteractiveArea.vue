@@ -53,6 +53,14 @@ function handleDeleteMessage(index: number) {
   })
 }
 
+async function handleBranchMessage(index: number) {
+  await chatSession.forkSession({
+    fromSessionId: chatSession.activeSessionId,
+    atIndex: index + 1,
+    setActive: true,
+  })
+}
+
 function handleCleanupMessages() {
   const messageCount = messages.value.filter(message => message.role !== 'system').length
   cleanupMessages()
@@ -186,6 +194,7 @@ onMounted(() => {
             'relative z-20',
           ]"
           @delete-message="handleDeleteMessage($event.index)"
+          @branch-message="handleBranchMessage($event.index)"
           @tool-call-rerun="rerunToolCall"
         />
       </Transition>

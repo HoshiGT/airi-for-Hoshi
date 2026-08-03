@@ -1382,13 +1382,13 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     return getSessionGeneration(target)
   }
 
-  async function forkSession(options: { fromSessionId: string, atIndex?: number, reason?: string, hidden?: boolean }) {
+  async function forkSession(options: { fromSessionId: string, atIndex?: number, setActive?: boolean, reason?: string, hidden?: boolean }) {
     const characterId = getCurrentCharacterId()
     await loadSession(options.fromSessionId)
     const parentMessages = getSessionMessages(options.fromSessionId)
     const forkIndex = options.atIndex ?? parentMessages.length
     const nextMessages = parentMessages.slice(0, forkIndex)
-    return await createSession(characterId, { setActive: false, messages: nextMessages })
+    return await createSession(characterId, { setActive: options.setActive ?? false, messages: nextMessages })
   }
 
   async function exportSessions(): Promise<ChatSessionsExport> {
