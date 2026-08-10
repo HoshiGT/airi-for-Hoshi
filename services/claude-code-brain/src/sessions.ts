@@ -34,25 +34,33 @@ function hashTexts(texts: string[]): string {
   return createHash('sha256').update(texts.join('\u0000')).digest('hex')
 }
 
+// AIRI replays a sliding window of recent messages (currently ~10 user turns);
+// old messages drop off the front each turn. Hashing ALL user messages would
+// drift every turn (the oldest message changes), so we hash only a short tail.
+// Must be ≥ 2 for collision resistance and strictly less than the window size
+// minus 1 so the tail stays stable across a one-message shift.
+const FINGERPRINT_TAIL = 3
+
 /**
- * Fingerprint to *look up* a session for the incoming request: all user turns
- * except the newest (the turn we are about to answer). Undefined when there is
- * no prior user turn — nothing to resume, so the caller starts fresh.
+ * Fingerprint to *look up* a session for the incoming request: the tail of user
+ * turns excluding the newest (the turn we are about to answer). Undefined when
+ * there is no prior user turn — nothing to resume, so the caller starts fresh.
  */
 export function sessionLookupKey(messages: OpenAIChatMessage[]): string | undefined {
   const users = userMessageTexts(messages)
   if (users.length < 2)
     return undefined
-  return hashTexts(users.slice(0, -1))
+  return hashTexts(users.slice(0, -1).slice(-FINGERPRINT_TAIL))
 }
 
 /**
- * Fingerprint to *store* the session after a turn completes: every user turn in
- * the request. The next request's {@link sessionLookupKey} equals this, so the
- * session advances one turn at a time.
+ * Fingerprint to *store* the session after a turn completes: the tail of user
+ * turns in the request. The next request's {@link sessionLookupKey} equals
+ * this, so the session advances one turn at a time — even when AIRI's sliding
+ * window drops old messages from the front.
  */
 export function sessionStoreKey(messages: OpenAIChatMessage[]): string {
-  return hashTexts(userMessageTexts(messages))
+  return hashTexts(userMessageTexts(messages).slice(-FINGERPRINT_TAIL))
 }
 
 function lastAssistantIndex(messages: OpenAIChatMessage[]): number {
@@ -65,14 +73,27 @@ export type SendStrategy
     | { mode: 'resume', sessionId: string, lookupKey: string }
 
 /**
- * Decide resume vs fresh. Tool-result continuations always go fresh: the prior
- * tool-call turn aborted its session mid-reply (see the passthrough abort in
- * index.ts), so that conversation's context must be replayed in full.
+ * Decide resume vs fresh.
+ *
+ * Tool-result continuations (current round has `role: 'tool'`) try to resume
+ * the session stored by the tool-call turn. No new user message is added
+ * between the tool-call and tool-result requests, so the lookup key is
+ * {@link sessionStoreKey} (hash of ALL user messages), matching what the
+ * tool-call turn stored under. If the post-abort session turns out to be
+ * incoherent, the error handler in index.ts invalidates it and retries fresh.
  */
 export function decideStrategy(messages: OpenAIChatMessage[], registry: SessionRegistry): SendStrategy {
   const currentRound = messages.slice(lastAssistantIndex(messages) + 1)
-  if (currentRound.some(message => message.role === 'tool'))
+  const isToolContinuation = currentRound.some(message => message.role === 'tool')
+
+  if (isToolContinuation) {
+    // No new user message since the tool-call turn → lookup with storeKey.
+    const lookupKey = sessionStoreKey(messages)
+    const sessionId = registry.lookup(lookupKey)
+    if (sessionId)
+      return { mode: 'resume', sessionId, lookupKey }
     return { mode: 'fresh' }
+  }
 
   const lookupKey = sessionLookupKey(messages)
   if (!lookupKey)
@@ -103,15 +124,22 @@ interface SessionEntry {
  */
 export class SessionRegistry {
   private readonly sessions = new Map<string, SessionEntry>()
+  private readonly onEvict?: (sessionId: string) => void
 
   /**
    * @param maxEntries LRU cap across all conversations.
    * @param ttlMs freshness window; entries older than this are treated as gone.
+   * @param onEvict fired with the sessionId when an entry is removed by TTL
+   *   expiry or LRU eviction — NOT by explicit `invalidate()`, which is part of
+   *   key rotation (the same sessionId is stored under a new key right after).
    */
   constructor(
     private readonly maxEntries = 200,
     private readonly ttlMs = 20 * 60 * 1000,
-  ) {}
+    onEvict?: (sessionId: string) => void,
+  ) {
+    this.onEvict = onEvict
+  }
 
   lookup(key: string): string | undefined {
     const entry = this.sessions.get(key)
@@ -119,6 +147,7 @@ export class SessionRegistry {
       return undefined
     if (Date.now() - entry.storedAt > this.ttlMs) {
       this.sessions.delete(key)
+      this.onEvict?.(entry.sessionId)
       return undefined
     }
     // Refresh recency (move to newest) and TTL.
@@ -135,8 +164,12 @@ export class SessionRegistry {
     // — the Map's first key.
     if (this.sessions.size > this.maxEntries) {
       const oldestKey = this.sessions.keys().next().value
-      if (oldestKey !== undefined)
+      if (oldestKey !== undefined) {
+        const evicted = this.sessions.get(oldestKey)
         this.sessions.delete(oldestKey)
+        if (evicted)
+          this.onEvict?.(evicted.sessionId)
+      }
     }
   }
 
