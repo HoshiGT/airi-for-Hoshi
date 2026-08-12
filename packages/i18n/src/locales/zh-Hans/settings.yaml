@@ -684,12 +684,16 @@ pages:
       summarization-model:
         title: 总结模型
         description: 用于把较早的对话总结成记忆、并判定为长期或短期的模型。可独立于核心模型单独选择。
+      tools:
+        title: 对话中的记忆
+        label: 允许 Ta 在对话中自己管理记忆
+        description: 把 memory_save / memory_recall / memory_forget 三个工具交给 Ta，聊天时可以自行决定记下什么、查什么、删掉什么，不会每次都来问你。关掉后对话中的记忆变成只读，下面的整理和手动编辑照旧可用。
       cadence:
         title: 整理节奏
-        auto-label: 自动整理
-        auto-desc: 对话达到触发轮数时自动总结并裁剪较早的对话。关闭后只保留下方的手动整理，聊天记录不会被自动裁剪。
-        trigger-label: 触发轮数
-        trigger-desc: 对话达到该轮数时启动一次整理。
+        trim-label: 整理后从对话中移除已总结的轮次
+        trim-desc: 默认开启：活动上下文以「保留最近轮数」为上限，更早的轮次先蒸馏成长短期记忆，再从对话中移除。总结是有损的，但存档摘要和长短期记忆会带着内容继续走；最近两次整理仍可撤销。
+        auto-label: 每日自动整理
+        auto-desc: 每天首次对话时自动总结尚未整理的轮次为记忆。关闭后只保留下方的手动整理。
         retain-label: 保留最近轮数
         retain-desc: 有多少最近的对话轮次原文保留在活动上下文中。
       prompt:

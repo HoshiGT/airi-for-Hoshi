@@ -15,6 +15,7 @@ import { useChatMaintenanceStore } from '../../../../stores/chat/maintenance'
 import { useMemoryService } from '../../../../stores/chat/memory'
 import { useAiriCardStore } from '../../../../stores/modules/airi-card'
 import { useMemoryStore } from '../../../../stores/modules/memory'
+import { useMemoryDigestStore } from '../../../../stores/modules/memory-digest'
 import { useProvidersStore } from '../../../../stores/providers'
 
 const { t } = useI18n()
@@ -23,6 +24,7 @@ const providersStore = useProvidersStore()
 const cardStore = useAiriCardStore()
 const memoryStore = useMemoryStore()
 const memoryService = useMemoryService()
+const memoryDigestStore = useMemoryDigestStore()
 const maintenanceStore = useChatMaintenanceStore()
 
 const { persistedChatProvidersMetadata } = storeToRefs(providersStore)
@@ -33,10 +35,11 @@ const {
   modelSearchQuery,
   supportsModelListing,
   providerModels,
-  triggerRounds,
   retainRounds,
   autoConsolidationEnabled,
   consolidationPrompt,
+  toolsEnabled,
+  trimAfterConsolidation,
 } = storeToRefs(memoryStore)
 
 const kindFilter = ref<'all' | MemoryKind>('all')
@@ -171,6 +174,9 @@ watch(activeProvider, async (provider, oldProvider) => {
 async function removeItem(id: string) {
   await memoryService.removeMemory(id)
   items.value = items.value.filter(item => item.id !== id)
+  // The digest is pinned per conversation, so an edit made here would otherwise
+  // not reach conversations already opened in this process.
+  memoryDigestStore.invalidate()
 }
 
 // Recall tags are free text: split on commas (ASCII/fullwidth) and whitespace.
@@ -212,6 +218,7 @@ async function saveAdd() {
     })
     adding.value = false
     await refresh()
+    memoryDigestStore.invalidate()
   }
   finally {
     savingEntry.value = false
@@ -249,6 +256,7 @@ async function saveEdit(id: string) {
     })
     editingId.value = null
     await refresh()
+    memoryDigestStore.invalidate()
   }
   finally {
     savingEntry.value = false
@@ -334,6 +342,26 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- In-chat memory curation (the memory_* tools) -->
+    <div :class="['rounded-xl p-4', 'bg-neutral-50 dark:bg-[rgba(0,0,0,0.3)]', 'flex flex-col gap-4']">
+      <div>
+        <h2 :class="['text-lg md:text-2xl', 'text-neutral-700 dark:text-neutral-300']">
+          {{ t('settings.pages.modules.memory.tools.title') }}
+        </h2>
+      </div>
+      <label :class="['flex items-start gap-3', 'cursor-pointer select-none']">
+        <input
+          v-model="toolsEnabled"
+          type="checkbox"
+          :class="['mt-1']"
+        >
+        <span :class="['flex flex-col gap-0.5']">
+          <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.tools.label') }}</span>
+          <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.tools.description') }}</span>
+        </span>
+      </label>
+    </div>
+
     <!-- Consolidation cadence -->
     <div :class="['rounded-xl p-4', 'bg-neutral-50 dark:bg-[rgba(0,0,0,0.3)]', 'flex flex-col gap-4']">
       <div>
@@ -341,6 +369,17 @@ onMounted(async () => {
           {{ t('settings.pages.modules.memory.cadence.title') }}
         </h2>
       </div>
+      <label :class="['flex items-start gap-3', 'cursor-pointer select-none']">
+        <input
+          v-model="trimAfterConsolidation"
+          type="checkbox"
+          :class="['mt-1']"
+        >
+        <span :class="['flex flex-col gap-0.5']">
+          <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.trim-label') }}</span>
+          <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.trim-desc') }}</span>
+        </span>
+      </label>
       <label :class="['flex items-start gap-3', 'cursor-pointer select-none']">
         <input
           v-model="autoConsolidationEnabled"
@@ -352,16 +391,7 @@ onMounted(async () => {
           <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.auto-desc') }}</span>
         </span>
       </label>
-      <div v-if="autoConsolidationEnabled" :class="['flex flex-col gap-4 md:flex-row']">
-        <label :class="['flex flex-1 flex-col gap-1']">
-          <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.trigger-label') }}</span>
-          <input
-            v-model.number="triggerRounds"
-            type="number" min="1"
-            :class="['w-full rounded px-3 py-2', 'border border-neutral-300 dark:border-neutral-700', 'bg-white dark:bg-neutral-900']"
-          >
-          <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.trigger-desc') }}</span>
-        </label>
+      <div v-if="autoConsolidationEnabled && trimAfterConsolidation" :class="['flex flex-col gap-4 md:flex-row']">
         <label :class="['flex flex-1 flex-col gap-1']">
           <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.retain-label') }}</span>
           <input

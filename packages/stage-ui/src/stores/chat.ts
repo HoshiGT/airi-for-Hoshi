@@ -32,6 +32,7 @@ import { useAiriCardStore } from './modules/airi-card'
 import { useAutonomousArtistryStore } from './modules/artistry-autonomous'
 import { useConsciousnessStore } from './modules/consciousness'
 import { useMemoryStore } from './modules/memory'
+import { useMemoryDigestStore } from './modules/memory-digest'
 import { useStickersStore } from './modules/stickers'
 import { useWebSearchStore } from './modules/web-search'
 
@@ -95,8 +96,17 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const chatContext = useChatContextStore()
   const cardStore = useAiriCardStore()
   const contextObservability = useContextObservabilityStore()
+  // Also eager for the same reason as web-search and stickers above: this store's
+  // watcher registers MEMORY_TOOLSET_PROMPT, and it must be in place before
+  // getSystemPromptSupplement is read, or the first turn could expose the
+  // `memory_*` tools with no guidance on when to use them.
   const memoryStore = useMemoryStore()
   const memoryService = useMemoryService()
+  // Eager for the same reason: this store's watcher pins the session's memory
+  // digest into the toolset prompt, and it has to be mounted before
+  // getSystemPromptSupplement is read or the first turn of a conversation goes
+  // out without the memories it should have started from.
+  useMemoryDigestStore()
   const { activeSessionId } = storeToRefs(chatSession)
   const { streamingMessage } = storeToRefs(chatStream)
 
@@ -182,8 +192,12 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
   /**
    * After a completed turn, summarize+archive the oldest rounds of `sessionId`
-   * and trim them from the live context once the round count crosses the
-   * configured high-water mark.
+   * into memory — and optionally trim them from the live context.
+   *
+   * Daily mode (default): consolidation fires once per calendar day on the first
+   * turn, batching everything that accumulated since the last pass. This avoids
+   * the old per-turn trigger which, without trimming, would fire a model call on
+   * every single turn once the round count exceeded the threshold.
    *
    * Fire-and-forget from the turn hook: it must never block the reply, and a
    * failed summary must never lose live history — trimming happens only after
@@ -192,23 +206,32 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   async function maybeConsolidateSession(sessionId: string) {
     if (!memoryStore.configured)
       return
-    // Manual-only mode: the settings-page 整理 button (consolidateSessionNow in
-    // the maintenance store) stays available; only this round-count trigger is
-    // gated off.
     if (!memoryStore.autoConsolidationEnabled)
       return
     if (consolidatingSessions.has(sessionId))
       return
 
-    // Detach from the reactive proxy: the archived messages are persisted into
-    // the memory DB and handed to the model, so they must be plain snapshots.
+    // Daily gate: only fire on the first turn of a new calendar day.
+    const today = new Date().toISOString().slice(0, 10)
+    if (memoryStore.lastDailyConsolidationDate === today)
+      return
+
+    const trimming = memoryStore.trimAfterConsolidation
+
     const snapshot = chatSession.getSessionMessages(sessionId).map(message => toRaw(message))
     const plan = planConsolidation(snapshot, {
-      triggerRounds: memoryStore.triggerRounds,
+      // Skip the round-count threshold: daily mode consolidates whatever has
+      // accumulated since the last pass, regardless of how many rounds that is.
       retainRounds: memoryStore.retainRounds,
+      consolidatedThroughRound: trimming ? 0 : await memoryService.consolidatedThroughRound(sessionId),
+      minNewRounds: 1,
     })
-    if (!plan)
+    if (!plan) {
+      // Nothing to consolidate, but still mark the day as done so we don't
+      // re-check on every subsequent turn today.
+      memoryStore.lastDailyConsolidationDate = today
       return
+    }
 
     consolidatingSessions.add(sessionId)
     try {
@@ -216,19 +239,20 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       await memoryService.consolidate(characterId, sessionId, toProviderHistory(plan.archived), {
         roundFrom: plan.roundFrom,
         roundTo: plan.roundTo,
-        // Undo backup: the raw session items (ids included) about to be trimmed.
-        archivedSessionMessages: plan.archived,
+        ...(trimming ? { archivedSessionMessages: plan.archived } : {}),
       })
 
-      // Trim by id against the *current* list, not the snapshot: messages that
-      // arrived while the model call ran keep their place; only the archived
-      // rounds are removed.
+      memoryStore.lastDailyConsolidationDate = today
+
+      if (!trimming)
+        return
+
       const current = chatSession.getSessionMessages(sessionId)
       const trimmed = current.filter(message => !message.id || !plan.archivedIds.has(message.id))
       chatSession.setSessionMessages(sessionId, trimmed)
     }
     catch (err) {
-      // Leave live history intact on failure; the next completed turn retries.
+      // Leave live history intact on failure; the next day's first turn retries.
       console.warn('[chat] memory consolidation failed for', sessionId, errorMessageFrom(err))
     }
     finally {
@@ -269,6 +293,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
     llm: {
       stream: streamWithStageAdapters,
     },
+    contextWindowRounds: () => memoryStore.retainRounds || undefined,
     getActiveSessionId: () => activeSessionId.value,
     getActiveProvider: () => activeProvider.value,
     getSystemPromptSupplement: () => llmToolsetPromptsStore.activeToolsetPrompt,

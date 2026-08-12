@@ -718,12 +718,16 @@ pages:
       summarization-model:
         title: Summarization Model
         description: The model used to summarize older conversation into memory and classify it as long- or short-term. Choose it independently from your core model.
+      tools:
+        title: In-chat Memory
+        label: Let the character manage memory during chat
+        description: Gives the character memory_save / memory_recall / memory_forget so it can store, look up, and delete memories on its own initiative while you talk, without asking first. Turn this off to keep memory read-only in chat — consolidation and manual edits below still work.
       cadence:
         title: Consolidation Cadence
-        auto-label: Automatic consolidation
-        auto-desc: Automatically summarize and trim older rounds once the conversation reaches the trigger count. When off, only the manual consolidation below runs and chat history is never auto-trimmed.
-        trigger-label: Trigger after rounds
-        trigger-desc: Start a consolidation pass once the conversation reaches this many rounds.
+        trim-label: Remove summarized rounds from the conversation
+        trim-desc: 'On by default: the live context is capped at the retained rounds, so older rounds are distilled into memory before leaving the conversation. Summarizing is lossy, but the archived summary and long/short memories carry the content forward; only the last two passes can be undone.'
+        auto-label: Daily auto-consolidation
+        auto-desc: Summarize unprocessed rounds into memory on the first conversation each day. When off, only the manual consolidation below runs.
         retain-label: Keep recent rounds
         retain-desc: How many of the most recent rounds stay in the live context verbatim.
       prompt:
