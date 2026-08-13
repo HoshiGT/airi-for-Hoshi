@@ -3,6 +3,7 @@ import type { Buffer } from 'node:buffer'
 import type { Browser, Page } from 'playwright'
 
 import type { Mineflayer } from '../libs/mineflayer'
+import type { BlockStateBridge } from './block-state-bridge'
 import type { ViewerFeed } from './viewer-feed'
 
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -15,7 +16,8 @@ import { supportedVersions } from 'prismarine-viewer'
 import { config } from '../composables/config'
 import { useLogger } from '../utils/logger'
 import { createBlockStateBridge, pickViewerVersion } from './block-state-bridge'
-import { startViewerFeed } from './viewer-feed'
+import { fetchBotSkinDataUrl } from './bot-skin'
+import { startViewerFeed, VIEWER_HOOK_SCRIPT } from './viewer-feed'
 
 /** Tuning for {@link BotCamera.renderFrame}; kept together because the values only make sense as a set. */
 const FRAME_SETTLE = {
@@ -100,6 +102,126 @@ const MESH_PROBE_SCRIPT = `(() => {
 /** Where the newest frame is mirrored for humans; see BotCamera.saveDebugFrame. */
 const LATEST_FRAME_PATH = join('data', 'vision', 'latest.jpg')
 
+/**
+ * Where the newest selfie frame is mirrored; kept apart from {@link LATEST_FRAME_PATH} so both
+ * views stay inspectable.
+ */
+const SELFIE_FRAME_PATH = join('data', 'vision', 'latest-selfie.jpg')
+
+/** What `SELFIE_POSE_SCRIPT` is told about the shot it should compose. */
+interface SelfiePose {
+  x: number
+  y: number
+  z: number
+  yaw: number
+  /**
+   * `data:image/png;base64,...` of the bot's real skin, or null to keep the default Steve texture
+   * (offline accounts, unpublished skins).
+   */
+  skin: string | null
+}
+
+/**
+ * Runs inside the renderer page: finds the bot's third-person model, dresses it in the real skin
+ * and moves the orbit camera to frame it from the front.
+ *
+ * The page owns the model: prismarine-viewer creates it in third-person mode as an `Object3D`
+ * holding one `THREE.SkinnedMesh` with the hardcoded Steve texture, tweened to the bot's position
+ * and yaw. Other players stream in as the same shape, so the bot's own model is picked by distance
+ * to the known bot position — and refused when the closest candidate is far away, because that
+ * means the model has not been created/tweened yet (it spawns at the origin).
+ *
+ * The camera convention mirrors `viewer.setFirstPersonCamera`: rotation.y = yaw, forward = -Z
+ * rotated by yaw, so the camera is placed along the direction the model actually faces. The
+ * orbit controls re-apply `position = target + offset` and `lookAt(target)` on every frame, so the
+ * shot is framed by moving their `target` to the face rather than by fighting them with a single
+ * `lookAt`.
+ *
+ * Restore state is saved only once, before the first pose of a series: retries that re-enter after
+ * a missed model must still return the camera to where it was before the *first* attempt.
+ */
+const SELFIE_POSE_SCRIPT = `(opts) => {
+  const exposed = window.__airiViewer
+  if (!exposed || !exposed.THREE || !exposed.scene || !exposed.camera)
+    return { exposed: false, found: false }
+
+  const THREE = exposed.THREE
+
+  if (!window.__airiSelfieRestore) {
+    const savedPosition = exposed.camera.position.clone()
+    const savedQuaternion = exposed.camera.quaternion.clone()
+    const savedTarget = exposed.controls ? exposed.controls.target.clone() : null
+    window.__airiSelfieRestore = () => {
+      exposed.camera.position.copy(savedPosition)
+      exposed.camera.quaternion.copy(savedQuaternion)
+      if (exposed.controls && savedTarget)
+        exposed.controls.target.copy(savedTarget)
+    }
+  }
+
+  const botPosition = new THREE.Vector3(opts.x, opts.y, opts.z)
+  let botRoot = null
+  let bestDistance = Infinity
+  for (const child of exposed.scene.children) {
+    if (child.type !== 'Object3D')
+      continue
+    if (!child.children.some(mesh => mesh.isSkinnedMesh === true))
+      continue
+    const distance = child.position.distanceToSquared(botPosition)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      botRoot = child
+    }
+  }
+  // More than a few blocks away means the model has not appeared/tweened yet, or the nearest
+  // candidate is somebody else; texturing either would be wrong.
+  const found = botRoot !== null && bestDistance < 16
+
+  const faceDirection = new THREE.Vector3(-Math.sin(opts.yaw), 0, -Math.cos(opts.yaw))
+  const cameraPosition = botPosition.clone().addScaledVector(faceDirection, 3.5)
+  cameraPosition.y += 1.6
+  const facePoint = new THREE.Vector3(opts.x, opts.y + 1.5, opts.z)
+
+  if (exposed.controls)
+    exposed.controls.target.copy(facePoint)
+  exposed.camera.position.copy(cameraPosition)
+  exposed.camera.lookAt(facePoint)
+
+  const applySkin = async () => {
+    if (!opts.skin || !found)
+      return
+
+    const mesh = botRoot.children.find(child => child.isSkinnedMesh === true)
+    if (!mesh)
+      return
+
+    try {
+      const texture = await Promise.race([
+        new Promise((resolve, reject) => {
+          new THREE.TextureLoader().load(opts.skin, resolve, undefined, reject)
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 5000)),
+      ])
+      texture.magFilter = THREE.NearestFilter
+      texture.minFilter = THREE.NearestFilter
+      texture.flipY = false
+      texture.wrapS = THREE.RepeatWrapping
+      texture.wrapT = THREE.RepeatWrapping
+      mesh.material.map = texture
+      mesh.material.needsUpdate = true
+    }
+    catch (error) {
+      console.warn('Selfie: skin texture failed to load, keeping the default skin:', error)
+    }
+  }
+
+  // Two animation frames: the swapped texture and moved camera only reach the canvas after the
+  // page's own render loop has run with them.
+  const waitFrames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+
+  return applySkin().then(waitFrames).then(() => ({ exposed: true, found }))
+}`
+
 /** A rendered first-person frame waiting to be shown to the model. */
 export interface VisionFrame {
   /** `data:image/jpeg;base64,...`, ready to drop into a chat image content part. */
@@ -136,23 +258,34 @@ export interface CaptureResult {
  *
  * Call stack:
  *
- * look tool (cognitive/action/llm-actions)
- *   -> {@link BotCamera.capture}
+ * look / selfie tools (cognitive/action/llm-actions)
+ *   -> {@link BotCamera.capture} / {@link BotCamera.selfie}
  *     -> {@link startViewerFeed} (bot world -> viewer web server)
- *       -> {@link BotCamera.renderFrame} (headless page -> JPEG)
+ *       -> {@link BotCamera.waitForSettle} (headless page -> JPEG)
  *         -> {@link BotCamera.takePendingFrame} (brain, next turn)
  */
 export class BotCamera {
   private readonly mineflayer: Mineflayer
   private readonly logger = useLogger()
 
+  private bridge: BlockStateBridge | null = null
   private feed: ViewerFeed | null = null
   private browser: Browser | null = null
   private page: Page | null = null
   private startup: Promise<void> | null = null
+
+  private selfieFeed: ViewerFeed | null = null
+  private selfieBrowser: Browser | null = null
+  private selfiePage: Page | null = null
+  private selfieStartup: Promise<void> | null = null
+
+  /** The bot's skin as a data URL, resolved at most once per camera session; see resolveSkin. */
+  private skinDataUrl: string | null = null
+  private skinResolved = false
+
   private pendingFrame: VisionFrame | null = null
-  /** Set once the renderer has meshed anything at all; see {@link BotCamera.renderFrame}. */
-  private warmedUp = false
+  /** Set per page once the renderer has meshed anything at all; see {@link BotCamera.waitForSettle}. */
+  private readonly warmedUp = new WeakMap<Page, boolean>()
 
   constructor(mineflayer: Mineflayer) {
     this.mineflayer = mineflayer
@@ -178,6 +311,58 @@ export class BotCamera {
     feed.pushPosition()
 
     const { image, settled } = await this.renderFrame(page)
+
+    await this.saveDebugFrame(image)
+
+    return this.deliverFrame(image, startedAt, settled)
+  }
+
+  /**
+   * Renders the bot from the outside — a third-person view of its real Minecraft skin, framed from
+   * the front a few blocks away — and parks it for the next LLM turn.
+   *
+   * Runs on a separate third-person viewer feed, because the first-person page never creates the
+   * bot model at all (it binds the camera to the bot's eyes and returns early). The skin is fetched
+   * once from the Mojang sessionserver; offline accounts keep the default Steve texture.
+   *
+   * Throws when the renderer cannot be brought up at all; the caller turns that into a structured
+   * tool failure so the model can carry on without vision.
+   */
+  async selfie(): Promise<CaptureResult> {
+    const startedAt = Date.now()
+    await this.ensureSelfieStarted()
+
+    const page = this.selfiePage
+    const feed = this.selfieFeed
+    if (!page || !feed)
+      throw new Error('Selfie renderer is not running')
+
+    // Both drives the page's orbit camera on a fresh connection and tweens the bot model to where
+    // the bot stands right now.
+    feed.pushPosition()
+
+    const settled = await this.waitForSettle(page)
+
+    const skin = await this.resolveSkin()
+    await this.poseSelfie(page, feed, {
+      x: this.mineflayer.bot.entity.position.x,
+      y: this.mineflayer.bot.entity.position.y,
+      z: this.mineflayer.bot.entity.position.z,
+      yaw: this.mineflayer.bot.entity.yaw,
+      skin,
+    })
+
+    const image = await this.shoot(page)
+
+    await this.restoreSelfieCamera(page)
+
+    await this.saveDebugFrame(image, SELFIE_FRAME_PATH)
+
+    return this.deliverFrame(image, startedAt, settled)
+  }
+
+  /** Fills the mailbox slot shared by `look` and `selfie`; the brain drains it on the next turn. */
+  private deliverFrame(image: Buffer, startedAt: number, settled: boolean): CaptureResult {
     const entity = this.mineflayer.bot.entity
 
     this.pendingFrame = {
@@ -193,8 +378,6 @@ export class BotCamera {
         pitch: Math.round(entity.pitch * 100) / 100,
       },
     }
-
-    await this.saveDebugFrame(image)
 
     return {
       width: config.vision.width,
@@ -218,23 +401,30 @@ export class BotCamera {
   async dispose(): Promise<void> {
     this.pendingFrame = null
     this.startup = null
+    this.selfieStartup = null
 
-    const page = this.page
-    const browser = this.browser
-    const feed = this.feed
+    const sessions = [
+      { page: this.page, browser: this.browser, feed: this.feed },
+      { page: this.selfiePage, browser: this.selfieBrowser, feed: this.selfieFeed },
+    ]
     this.page = null
     this.browser = null
     this.feed = null
+    this.selfiePage = null
+    this.selfieBrowser = null
+    this.selfieFeed = null
 
-    try {
-      await page?.close()
-      await browser?.close()
-    }
-    catch (error) {
-      this.logger.warn(`Vision: failed to close the headless browser cleanly: ${errorMessageFrom(error)}`)
-    }
+    for (const session of sessions) {
+      try {
+        await session.page?.close()
+        await session.browser?.close()
+      }
+      catch (error) {
+        this.logger.warn(`Vision: failed to close the headless browser cleanly: ${errorMessageFrom(error)}`)
+      }
 
-    feed?.close()
+      session.feed?.close()
+    }
   }
 
   /** Boots the feed and browser once; concurrent captures share the same startup. */
@@ -252,27 +442,77 @@ export class BotCamera {
     return this.startup
   }
 
-  private async start(): Promise<void> {
+  /** Boots the selfie feed and browser once; concurrent selfies share the same startup. */
+  private async ensureSelfieStarted(): Promise<void> {
+    if (this.selfiePage)
+      return
+
+    this.selfieStartup ??= this.startSelfie().catch((error) => {
+      // Same policy as ensureStarted: a failed start must not poison later attempts.
+      this.selfieStartup = null
+      throw error
+    })
+
+    return this.selfieStartup
+  }
+
+  /** Builds the block-state translation once and shares it between the two feeds. */
+  private async ensureBridge(): Promise<BlockStateBridge> {
+    if (this.bridge)
+      return this.bridge
+
     const bot = this.mineflayer.bot
     const targetVersion = pickViewerVersion(bot.version, supportedVersions)
-    const bridge = createBlockStateBridge(bot.registry, targetVersion)
+    this.bridge = createBlockStateBridge(bot.registry, targetVersion)
 
-    if (bridge.translating) {
+    if (this.bridge.translating) {
       this.logger.log(
-        `Vision: rendering ${bridge.sourceVersion} world with the ${bridge.targetVersion} renderer `
-        + `(${bridge.coverage.blocksMappedExactly} blocks mapped exactly, `
-        + `${bridge.coverage.blocksWithChangedStates} collapsed to their default state, `
-        + `${bridge.coverage.blocksWithoutTwin} without a counterpart)`,
+        `Vision: rendering ${this.bridge.sourceVersion} world with the ${this.bridge.targetVersion} renderer `
+        + `(${this.bridge.coverage.blocksMappedExactly} blocks mapped exactly, `
+        + `${this.bridge.coverage.blocksWithChangedStates} collapsed to their default state, `
+        + `${this.bridge.coverage.blocksWithoutTwin} without a counterpart)`,
       )
     }
 
-    this.feed = await startViewerFeed(bot, {
+    return this.bridge
+  }
+
+  private async start(): Promise<void> {
+    this.feed = await startViewerFeed(this.mineflayer.bot, {
       port: config.vision.port,
       viewDistance: config.vision.viewDistance,
-      bridge,
+      bridge: await this.ensureBridge(),
     })
 
-    this.browser = await chromium.launch({
+    const { browser, page } = await this.launchViewerPage(this.feed)
+    this.browser = browser
+    this.page = page
+    this.feed.pushPosition()
+
+    this.logger.log(`Vision: renderer ready on port ${this.feed.port}`)
+  }
+
+  private async startSelfie(): Promise<void> {
+    this.selfieFeed = await startViewerFeed(this.mineflayer.bot, {
+      port: config.vision.selfiePort,
+      viewDistance: config.vision.viewDistance,
+      // Third person: the page adds a visible bot model (with the default Steve texture) and keeps
+      // the orbit camera, which the selfie pose then moves and retextures.
+      firstPerson: false,
+      bridge: await this.ensureBridge(),
+    })
+
+    const { browser, page } = await this.launchViewerPage(this.selfieFeed)
+    this.selfieBrowser = browser
+    this.selfiePage = page
+    this.selfieFeed.pushPosition()
+
+    this.logger.log(`Vision: selfie renderer ready on port ${this.selfieFeed.port}`)
+  }
+
+  /** Launches the headless page shared by both feeds, with the mesh probe and viewer hook installed. */
+  private async launchViewerPage(feed: ViewerFeed): Promise<{ browser: Browser, page: Page }> {
+    const browser = await chromium.launch({
       // NOTICE:
       // Software rendering is mandatory here. The bot runs headless with no GPU access, and
       // three.js needs a real WebGL context; without these flags Chromium falls back to a stub
@@ -285,21 +525,26 @@ export class BotCamera {
       ],
     })
 
-    this.page = await this.browser.newPage({
+    const page = await browser.newPage({
       viewport: { width: config.vision.width, height: config.vision.height },
     })
 
-    this.page.on('pageerror', error => this.logger.warn(`Vision: renderer page error: ${errorMessageFrom(error)}`))
+    page.on('pageerror', error => this.logger.warn(`Vision: renderer page error: ${errorMessageFrom(error)}`))
 
-    await this.page.addInitScript(MESH_PROBE_SCRIPT)
-    await this.page.goto(`http://127.0.0.1:${this.feed.port}`, { waitUntil: 'load' })
-    this.feed.pushPosition()
+    await page.addInitScript(MESH_PROBE_SCRIPT)
+    await page.addInitScript(VIEWER_HOOK_SCRIPT)
+    await page.goto(`http://127.0.0.1:${feed.port}`, { waitUntil: 'load' })
 
-    this.logger.log(`Vision: renderer ready on port ${this.feed.port}`)
+    return { browser, page }
+  }
+
+  private async renderFrame(page: Page): Promise<{ image: Buffer, settled: boolean }> {
+    const settled = await this.waitForSettle(page)
+    return { image: await this.shoot(page), settled }
   }
 
   /**
-   * Screenshots the page once the renderer has finished building the geometry it was asked for.
+   * Waits until the renderer has finished building the geometry it was asked for.
    *
    * ROOT CAUSE for not simply comparing consecutive frames:
    *
@@ -312,10 +557,10 @@ export class BotCamera {
    * {@link MESH_PROBE_SCRIPT}: no sections left outstanding, plus a quiet moment, means the view is
    * as complete as it is going to get.
    */
-  private async renderFrame(page: Page): Promise<{ image: Buffer, settled: boolean }> {
+  private async waitForSettle(page: Page): Promise<boolean> {
     // A cold page has drawn nothing yet, so "no work outstanding" is not evidence of a finished
     // view until at least one section has actually been meshed.
-    const requireMeshedWork = !this.warmedUp
+    const requireMeshedWork = !this.warmedUp.get(page)
     const deadline = Date.now() + FRAME_SETTLE.timeoutMs
 
     while (Date.now() < deadline) {
@@ -327,8 +572,8 @@ export class BotCamera {
       const hasDrawnSomething = stats !== null && stats.meshed > 0
 
       if (idle && (hasDrawnSomething || !requireMeshedWork)) {
-        this.warmedUp = true
-        return { image: await this.shoot(page), settled: true }
+        this.warmedUp.set(page, true)
+        return true
       }
 
       await new Promise(resolve => setTimeout(resolve, FRAME_SETTLE.pollMs))
@@ -337,7 +582,80 @@ export class BotCamera {
     // Out of time. A partly meshed world still tells the model more than an error does, so the
     // frame is sent with `settled: false` and the tool says so in its result.
     this.logger.warn('Vision: the renderer did not finish meshing in time; sending a partial frame')
-    return { image: await this.shoot(page), settled: false }
+    return false
+  }
+
+  /**
+   * Frames the shot inside the page, retrying while the bot model has not appeared yet.
+   *
+   * The model is created the moment the page sees its first position event and tweens to the bot
+   * over the following frames, so a fresh page can legitimately report "not found" a few times; a
+   * missed position event (the push racing the socket handshake) is fixed by pushing again.
+   */
+  private async poseSelfie(page: Page, feed: ViewerFeed, pose: SelfiePose): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      let outcome: { exposed: boolean, found: boolean }
+      try {
+        outcome = await page.evaluate<{ exposed: boolean, found: boolean }>(
+          `(${SELFIE_POSE_SCRIPT})(${JSON.stringify(pose)})`,
+        )
+      }
+      catch {
+        // The page can be mid-navigation or closed underneath us; treat it as "not found yet".
+        outcome = { exposed: true, found: false }
+      }
+
+      if (!outcome.exposed) {
+        throw new Error(
+          'The viewer page did not expose the renderer — the prismarine-viewer bundle likely changed and the viewer hook no longer matches it',
+        )
+      }
+
+      if (outcome.found)
+        return
+
+      feed.pushPosition()
+      await new Promise(resolve => setTimeout(resolve, 150))
+    }
+
+    this.logger.warn('Vision: no player model appeared in the selfie view; the frame shows the world without the bot')
+  }
+
+  /** Returns the camera to where the page had it before the selfie pose. */
+  private async restoreSelfieCamera(page: Page): Promise<void> {
+    try {
+      await page.evaluate(`(() => {
+        if (window.__airiSelfieRestore)
+          window.__airiSelfieRestore()
+        window.__airiSelfieRestore = null
+      })()`)
+    }
+    catch {
+      // The page can be mid-navigation or closing; the next selfie re-saves its own restore point.
+    }
+  }
+
+  /**
+   * Fetches the bot's skin at most once per camera session.
+   *
+   * Skins are account state that changes rarely mid-session; resolving repeatedly would hit the
+   * Mojang servers on every selfie for nothing. Failures are remembered too, so an offline bot does
+   * not retry (and log warnings) on every selfie — it keeps the default Steve texture.
+   */
+  private async resolveSkin(): Promise<string | null> {
+    if (this.skinResolved)
+      return this.skinDataUrl
+
+    this.skinResolved = true
+    try {
+      this.skinDataUrl = await fetchBotSkinDataUrl(this.mineflayer.bot)
+    }
+    catch (error) {
+      // The selfie must still work offline; the default skin is a perfectly fine fallback.
+      this.logger.warn(`Vision: could not fetch the bot skin, keeping the default: ${errorMessageFrom(error)}`)
+    }
+
+    return this.skinDataUrl
   }
 
   private shoot(page: Page): Promise<Buffer> {
@@ -347,13 +665,13 @@ export class BotCamera {
   /**
    * Mirrors the newest frame to disk so a human can see exactly what the bot saw.
    *
-   * Deliberately a single overwritten file: this is a debugging window, not a history, and an
-   * unbounded folder of frames would quietly fill the disk of a bot that likes to look around.
+   * Deliberately a single overwritten file per view: this is a debugging window, not a history, and
+   * an unbounded folder of frames would quietly fill the disk of a bot that likes to look around.
    */
-  private async saveDebugFrame(image: Buffer): Promise<void> {
+  private async saveDebugFrame(image: Buffer, path = LATEST_FRAME_PATH): Promise<void> {
     try {
-      await mkdir(dirname(LATEST_FRAME_PATH), { recursive: true })
-      await writeFile(LATEST_FRAME_PATH, image)
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, image)
     }
     catch (error) {
       this.logger.warn(`Vision: could not write the debug frame: ${errorMessageFrom(error)}`)

@@ -160,4 +160,25 @@ describe.skipIf(!enabled)('botCamera rendering', () => {
     await camera.capture()
     expect(camera.hasPendingFrame()).toBe(true)
   }, 120_000)
+
+  it('renders a third-person selfie with the bot model in frame', async () => {
+    const result = await camera.selfie()
+
+    expect(result.width).toBe(config.vision.width)
+    expect(result.height).toBe(config.vision.height)
+    expect(result.settled).toBe(true)
+
+    // The stub bot has no logged-in client, so the skin resolves to null and the page keeps the
+    // default Steve texture; the shot still must be framed and delivered.
+    const frame = camera.takePendingFrame()
+    expect(frame).not.toBeNull()
+    expect(frame!.dataUrl.startsWith('data:image/jpeg;base64,')).toBe(true)
+
+    const bytes = Buffer.from(frame!.dataUrl.split(',')[1], 'base64').byteLength
+    expect(bytes).toBeGreaterThan(8_000)
+
+    // The bot stands at GROUND_Y + 1 and the camera frames from ~3.5 blocks in front of it; the
+    // recorded vantage must be the bot's own position, not the camera's.
+    expect(frame!.vantage.y).toBe(GROUND_Y + 1)
+  }, 120_000)
 })

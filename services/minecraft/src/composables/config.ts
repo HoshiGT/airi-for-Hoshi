@@ -49,6 +49,9 @@ export const configSchema = z.object({
     // Separate from the debug viewer's port so both can run side by side; this one only ever
     // serves the bot's own headless browser.
     port: z.coerce.number().int().min(1).max(65535).default(3008),
+    // The third-person selfie renderer runs its own viewer feed; it needs a second port for the
+    // same reason the debug viewer does — two prismarine-viewer servers cannot share one.
+    selfiePort: z.coerce.number().int().min(1).max(65535).default(3009),
     // Frame size drives the model's image token cost (roughly width*height/750 tokens), so it is
     // kept modest: large enough to read block shapes, small enough to look often.
     width: z.coerce.number().int().min(160).max(1920).default(640),
@@ -117,6 +120,7 @@ const defaultConfig: Omit<Config, 'openai'> = {
   vision: {
     enabled: true,
     port: 3008,
+    selfiePort: 3009,
     width: 640,
     height: 400,
     viewDistance: 4,
@@ -148,6 +152,7 @@ export function initEnv(): void {
       // so an unused camera costs nothing but a missing one silently blinds the bot.
       enabled: env.ENABLE_BOT_VISION !== 'false',
       port: env.BOT_VISION_PORT || defaultConfig.vision.port,
+      selfiePort: env.BOT_VISION_SELFIE_PORT || defaultConfig.vision.selfiePort,
       width: env.BOT_VISION_WIDTH || defaultConfig.vision.width,
       height: env.BOT_VISION_HEIGHT || defaultConfig.vision.height,
       viewDistance: env.BOT_VISION_VIEW_DISTANCE || defaultConfig.vision.viewDistance,

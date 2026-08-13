@@ -198,6 +198,36 @@ export const actionsList: Action[] = [
     },
   },
   {
+    name: 'selfie',
+    description: 'Render a picture of yourself from outside: a third-person selfie showing your real Minecraft skin, framed from the front a few blocks away. The image is not returned by this call — it arrives attached to your next turn, so end the script after calling it. Use it when someone asks what you look like, wants to see your skin or outfit, or asks you to show yourself.',
+    execution: 'async',
+    // Perception, not world interaction: it must not consume the action queue or pause following.
+    readonly: true,
+    schema: z.object({}),
+    perform: mineflayer => async (): Promise<SkillResult> => {
+      if (!config.vision.enabled)
+        return skillFail('vision_disabled', 'Vision is turned off for this bot (ENABLE_BOT_VISION=false), so you cannot take pictures. Rely on the world state and the map instead.')
+
+      try {
+        const frame = await useBotCamera(mineflayer).selfie()
+
+        // A frame that never settled is still worth sending, but the model should know it may be
+        // looking at a half-meshed world rather than an empty one.
+        const caveat = frame.settled
+          ? ''
+          : ' The renderer was still loading chunks, so parts of the view may be missing.'
+
+        return skillOk(
+          `Captured a ${frame.width}x${frame.height} third-person selfie; it will be attached to your next turn.${caveat}`,
+          { width: frame.width, height: frame.height, durationMs: frame.durationMs, settled: frame.settled },
+        )
+      }
+      catch (error) {
+        return skillFail('vision_unavailable', `Could not render a selfie: ${errorMessageFrom(error)}`)
+      }
+    },
+  },
+  {
     name: 'goToPlayer',
     description: 'Go to the given player.',
     execution: 'async',

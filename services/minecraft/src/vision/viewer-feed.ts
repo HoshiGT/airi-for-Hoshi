@@ -28,8 +28,101 @@ export interface ViewerFeedOptions {
   port: number
   /** Chunk radius streamed to the viewer. Larger costs meshing time on every new chunk. */
   viewDistance: number
+  /** True renders through the bot's eyes; false renders an orbit camera with a visible bot model. */
+  firstPerson?: boolean
   bridge: BlockStateBridge
 }
+
+/**
+ * Exposes the page's `Viewer` internals on `window.__airiViewer` by intercepting the moment the
+ * bundle publishes three.js to the global scope.
+ *
+ * NOTICE:
+ * The viewer instance is constructed inside the webpack bundle's module scope and never published
+ * (`prismarine-viewer/lib/index.js`), so `page.evaluate()` has no way to reach `viewer.scene` or
+ * `viewer.camera` afterwards. The bundle does, however, run `globalThis.THREE = require('three')`
+ * before constructing anything — a plain global assignment that an init script can intercept.
+ *
+ * But three's own exports are getter-only module properties (webpack's ES module output), so
+ * wrapping `THREE.Scene` / `THREE.PerspectiveCamera` is impossible: assigning to them silently
+ * does nothing. The one hookable seam is `THREE.OrbitControls`, which the examples module attaches
+ * to the namespace with a plain assignment. Intercepting that yields the viewer's camera straight
+ * from the constructor's first argument, and the camera's prototype chain gives `Object3D.prototype`,
+ * whose `add` can be wrapped to observe the scene: every mesh the page adds — lights, chunk
+ * sections, the bot model — is added to `viewer.scene`, and `this` of the call is the scene itself.
+ *
+ * Must run as an init script: all of this happens during the bundle's synchronous startup.
+ *
+ * Removal condition: never, unless prismarine-viewer starts publishing the viewer instance itself.
+ */
+export const VIEWER_HOOK_SCRIPT = `(() => {
+  const exposed = { THREE: null, scene: null, camera: null, controls: null }
+  window.__airiViewer = exposed
+
+  const hookedProtos = new WeakSet()
+
+  // Runs while the OrbitControls constructor is on the stack, i.e. during bundle startup, before
+  // any chunk section or the bot model has been added to the scene.
+  const hookSceneCapture = (camera) => {
+    if (!camera)
+      return
+
+    // Walk up to the prototype that *owns* 'add' (Object3D.prototype), not just the first one that
+    // inherits it: patching an intermediate prototype would shadow nothing but itself, and
+    // scene.add would never pass through the wrapper.
+    let proto = camera
+    while (proto) {
+      proto = Object.getPrototypeOf(proto)
+      if (proto && Object.prototype.hasOwnProperty.call(proto, 'add'))
+        break
+    }
+
+    if (!proto || hookedProtos.has(proto))
+      return
+
+    hookedProtos.add(proto)
+    const originalAdd = proto.add
+    proto.add = function (...args) {
+      if (!exposed.scene && this.isScene === true)
+        exposed.scene = this
+      return originalAdd.apply(this, args)
+    }
+  }
+
+  let hooked = false
+  const hook = (THREE) => {
+    if (hooked)
+      return
+    hooked = true
+    exposed.THREE = THREE
+
+    // OrbitControls attaches itself to the namespace after three has already loaded, so it is
+    // wrapped on assignment instead of up front.
+    let OrbitControls = null
+    Object.defineProperty(THREE, 'OrbitControls', {
+      configurable: true,
+      get: () => OrbitControls,
+      set: (Original) => {
+        OrbitControls = class extends Original {
+          constructor(...args) {
+            super(...args)
+            if (!exposed.controls)
+              exposed.controls = this
+            if (!exposed.camera && args[0] && args[0].isPerspectiveCamera === true)
+              exposed.camera = args[0]
+            hookSceneCapture(args[0])
+          }
+        }
+      },
+    })
+  }
+
+  Object.defineProperty(window, 'THREE', {
+    configurable: true,
+    get: () => exposed.THREE,
+    set: hook,
+  })
+})()`
 
 /**
  * Starts the prismarine-viewer web server against a translated view of the bot.
@@ -47,7 +140,7 @@ export async function startViewerFeed(bot: Bot, options: ViewerFeedOptions): Pro
   startPrismarineViewer(view, {
     port: options.port,
     viewDistance: options.viewDistance,
-    firstPerson: true,
+    firstPerson: options.firstPerson ?? true,
   })
 
   return {
