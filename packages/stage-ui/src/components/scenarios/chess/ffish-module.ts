@@ -1,3 +1,5 @@
+import type { ModuleOptions } from 'ffish-es6'
+
 import type { Variant } from './shared'
 
 // NOTICE:
@@ -55,9 +57,16 @@ function decodeInlineWasm(dataUri: string): ArrayBuffer {
 // initializing it is the expensive step, so it is created once and reused.
 let ffishModulePromise: ReturnType<typeof initFfish> | undefined
 
+// The shipped ffish.d.ts omits `wasmBinary`, the Emscripten option that skips
+// the glue's runtime fetch (untyped but part of the actual init contract);
+// declared as an intersection here instead of a module augmentation, which
+// would shadow the package's own type file under bundler resolution.
+type FfishInitOptions = ModuleOptions & { wasmBinary?: ArrayBuffer | Uint8Array }
+
 /** Returns the shared ffish module, initializing the WASM runtime on first use. */
 export function ffishModule(): ReturnType<typeof initFfish> {
-  ffishModulePromise ??= initFfish({ wasmBinary: FFISH_WASM_BINARY })
+  const options: FfishInitOptions = { wasmBinary: FFISH_WASM_BINARY }
+  ffishModulePromise ??= initFfish(options)
   return ffishModulePromise
 }
 
