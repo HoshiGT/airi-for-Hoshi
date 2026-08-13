@@ -508,6 +508,28 @@ export const electronGodotStageStatusChanged = defineEventa<ElectronGodotStageSt
 export const electronGodotStageViewSnapshotChanged = defineEventa<StageViewSnapshotPayload>('eventa:event:electron:godot-stage:view-snapshot-changed')
 export const electronGodotStageViewStateError = defineEventa<StageViewErrorPayload>('eventa:event:electron:godot-stage:view-state-error')
 
+export type ElectronBrainState = 'stopped' | 'starting' | 'running' | 'error'
+
+/**
+ * Snapshot of the Claude Code brain sidecar lifecycle owned by Electron main.
+ *
+ * - `pid` is only set while the brain child process we spawned exists; it
+ *   stays `null` when the port was already served by another instance
+ * - `lastError` is present after a spawn, startup, or crash failure
+ */
+export interface ElectronBrainStatus {
+  state: ElectronBrainState
+  port: number
+  pid: number | null
+  lastError?: string
+  updatedAt: number
+}
+
+export const electronBrainStart = defineInvokeEventa<ElectronBrainStatus, { port?: number }>('eventa:invoke:electron:brain:start')
+export const electronBrainStop = defineInvokeEventa<ElectronBrainStatus>('eventa:invoke:electron:brain:stop')
+export const electronBrainGetStatus = defineInvokeEventa<ElectronBrainStatus>('eventa:invoke:electron:brain:get-status')
+export const electronBrainStatusChanged = defineEventa<ElectronBrainStatus>('eventa:event:electron:brain:status-changed')
+
 // Global shortcut ->
 
 /**

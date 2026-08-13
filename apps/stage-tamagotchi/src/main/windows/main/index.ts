@@ -3,6 +3,7 @@ import type { InferOutput } from 'valibot'
 
 import type { I18n } from '../../libs/i18n'
 import type { WindowAuthManager } from '../../services/airi/auth'
+import type { BrainManager } from '../../services/airi/brain'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { GodotStageManager } from '../../services/airi/godot-stage'
 import type { McpStdioManager } from '../../services/airi/mcp-servers'
@@ -32,6 +33,7 @@ import icon from '../../../../resources/icon.png?asset'
 import { electronStartDraggingWindow } from '../../../shared/eventa'
 import { onAppBeforeQuit } from '../../libs/bootkit/lifecycle'
 import { baseUrl, getElectronMainDirname, load } from '../../libs/electron/location'
+import { wasLaunchedAtLogin } from '../../libs/electron/login-item'
 import { createConfig } from '../../libs/electron/persistence'
 import { protectPrivilegedWindowNavigation, transparentWindowConfig } from '../shared'
 import { setupMainWindowElectronInvokes } from './rpc/index.electron'
@@ -58,6 +60,7 @@ export async function setupMainWindow(params: {
   onWindowCreated?: (window: BrowserWindow) => void
   serverChannel: ServerChannel
   godotStageManager: GodotStageManager
+  brainManager: BrainManager
   mcpStdioManager: McpStdioManager
   i18n: I18n
   onboardingWindowManager: OnboardingWindowManager
@@ -170,7 +173,16 @@ export async function setupMainWindow(params: {
     window.setWindowButtonVisibility(false)
   }
 
-  window.on('ready-to-show', () => window!.show())
+  // Started by the OS session rather than by the user: come up as tray-only.
+  // The renderer still loads (so the character is live, memory is open, and
+  // notifications can fire), it just does not put itself on screen — the tray's
+  // "show" item is how the model is summoned.
+  window.on('ready-to-show', () => {
+    if (wasLaunchedAtLogin())
+      return
+
+    window!.show()
+  })
   protectPrivilegedWindowNavigation(window)
 
   await setupMainWindowElectronInvokes({
@@ -182,6 +194,7 @@ export async function setupMainWindow(params: {
     autoUpdater: params.autoUpdater,
     serverChannel: params.serverChannel,
     godotStageManager: params.godotStageManager,
+    brainManager: params.brainManager,
     mcpStdioManager: params.mcpStdioManager,
     i18n: params.i18n,
     onboardingWindowManager: params.onboardingWindowManager,

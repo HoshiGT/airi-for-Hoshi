@@ -1048,6 +1048,13 @@ pages:
             part5: >-
               このプロバイダーを使用する必要がある場合は、 Serverless Function で実行される専用のプロキシバックエンド、
             part6: またはCORS制限をバイパスするためのCORSバイパスサービスが必要です。
+      claude-code:
+        description: Claude Code サブスクリプションをローカルブリッジ経由で AIRI の頭脳として使用します。
+        title: Claude Code
+        fields:
+          port:
+            label: ポート
+            description: Claude Code ブレインサービスがリッスンするポート。
       cloudflare-workers-ai:
         description: cloudflare.com
         fields:

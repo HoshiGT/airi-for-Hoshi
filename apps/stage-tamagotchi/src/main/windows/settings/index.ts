@@ -1,5 +1,6 @@
 import type { I18n } from '../../libs/i18n'
 import type { WindowAuthManager } from '../../services/airi/auth'
+import type { BrainManager } from '../../services/airi/brain'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { GodotStageManager } from '../../services/airi/godot-stage'
 import type { McpStdioManager } from '../../services/airi/mcp-servers'
@@ -35,6 +36,7 @@ export function setupSettingsWindowReusableFunc(params: {
   onWindowCreated?: (window: BrowserWindow) => void
   serverChannel: ServerChannel
   godotStageManager: GodotStageManager
+  brainManager: BrainManager
   mcpStdioManager: McpStdioManager
   i18n: I18n
   windowAuthManager: WindowAuthManager
@@ -74,6 +76,7 @@ export function setupSettingsWindowReusableFunc(params: {
       getMainWindow: params.getMainWindow,
       serverChannel: params.serverChannel,
       godotStageManager: params.godotStageManager,
+      brainManager: params.brainManager,
       mcpStdioManager: params.mcpStdioManager,
       i18n: params.i18n,
       windowAuthManager: params.windowAuthManager,

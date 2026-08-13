@@ -2,6 +2,7 @@ import type { BrowserWindow } from 'electron'
 
 import type { I18n } from '../../../libs/i18n'
 import type { WindowAuthManager } from '../../../services/airi/auth'
+import type { BrainManager } from '../../../services/airi/brain'
 import type { ServerChannel } from '../../../services/airi/channel-server'
 import type { GodotStageManager } from '../../../services/airi/godot-stage'
 import type { McpStdioManager } from '../../../services/airi/mcp-servers'
@@ -17,6 +18,7 @@ import { ipcMain } from 'electron'
 
 import { electronCenterMainWindow, electronOpenChat, electronOpenMainDevtools, electronOpenSettings, noticeWindowEventa } from '../../../../shared/eventa'
 import { createAuthService } from '../../../services/airi/auth'
+import { createBrainService } from '../../../services/airi/brain'
 import { createGodotStageService } from '../../../services/airi/godot-stage'
 import { createMcpServersService } from '../../../services/airi/mcp-servers'
 import { createOnboardingService } from '../../../services/airi/onboarding'
@@ -35,6 +37,7 @@ export async function setupMainWindowElectronInvokes(params: {
   autoUpdater: AutoUpdater
   serverChannel: ServerChannel
   godotStageManager: GodotStageManager
+  brainManager: BrainManager
   mcpStdioManager: McpStdioManager
   i18n: I18n
   onboardingWindowManager: OnboardingWindowManager
@@ -52,6 +55,7 @@ export async function setupMainWindowElectronInvokes(params: {
   createAutoUpdaterService({ context, window: params.window, service: params.autoUpdater })
   createMcpServersService({ context, manager: params.mcpStdioManager })
   createGodotStageService({ context, manager: params.godotStageManager, window: params.window })
+  createBrainService({ context, manager: params.brainManager, window: params.window })
   createOnboardingService({ context, onboardingWindowManager: params.onboardingWindowManager, mainWindow: params.window })
   createAuthService({ context, window: params.window, windowAuthManager: params.windowAuthManager })
 

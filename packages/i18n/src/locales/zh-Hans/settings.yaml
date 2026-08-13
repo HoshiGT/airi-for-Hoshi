@@ -1171,6 +1171,13 @@ pages:
             part5: >-
               如果您确实需要使用此提供程序，则需要一个专用的代理后端，例如在
             part6: 上运行的Serverless Function，或者一些绕过 CORS 的服务，以绕过 CORS 限制。
+      claude-code:
+        description: 用你的 Claude Code 订阅作为 AIRI 的大脑，通过本地桥接服务连接。
+        title: Claude Code
+        fields:
+          port:
+            label: 端口
+            description: Claude Code 大脑服务监听的端口。
       cloudflare-workers-ai:
         description: Cloudflare.com
         fields:

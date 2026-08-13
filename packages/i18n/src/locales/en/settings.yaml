@@ -1225,6 +1225,13 @@ pages:
               If you do need to use this provider, you will need a dedicated
               proxy backend like a Serverless Function running on
             part6: or some CORS bypassing services to bypass the CORS restrictions.
+      claude-code:
+        description: Use your Claude Code subscription as AIRI's brain via a local bridge.
+        title: Claude Code
+        fields:
+          port:
+            label: Port
+            description: The port the Claude Code brain service listens on.
       cloudflare-workers-ai:
         description: cloudflare.com
         fields:

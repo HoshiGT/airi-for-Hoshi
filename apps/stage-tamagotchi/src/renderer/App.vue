@@ -52,6 +52,7 @@ import {
 import { electronPluginToolsChanged } from '../shared/eventa/plugin/tools'
 import { initializeElectronAuthCallbackBridge } from './bridges/electron-auth-callback'
 import { initializeStageThreeRuntimeTraceBridge } from './bridges/stage-three-runtime-trace'
+import { useClaudeCodeBrain } from './composables/use-claude-code-brain'
 import { useLanguage } from './composables/use-language'
 import { createChatSyncWindowLifecycle, resolveInitialChatSyncRoutePath } from './stores/chat-sync-lifecycle'
 import { useDesktopControlToolsStore } from './stores/desktop-control-tools'
@@ -259,6 +260,13 @@ function createFullStageRuntime() {
 }
 
 const fullStageRuntime = isSpotlightWindowRoute ? null : createFullStageRuntime()
+
+// The stage window (route '/') owns the Claude Code brain sidecar lifecycle:
+// selecting the claude-code provider starts it, switching away stops it.
+// Settings/chat windows also sync provider changes, but the manager serializes
+// their invokes, so a single owner keeps start/stop semantics unambiguous.
+if (initialWindowRoutePath === '/')
+  useClaudeCodeBrain()
 
 const { restore: restoreLocale } = useLanguage(language, getMainLocale, setLocale)
 
