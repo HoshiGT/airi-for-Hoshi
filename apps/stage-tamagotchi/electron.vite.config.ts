@@ -97,6 +97,14 @@ export default defineConfig({
     // https://github.com/alex8088/electron-vite/issues/99#issuecomment-1862671727
     base: './',
 
+    // ffish-module.ts inlines ffish.wasm as a `?inline` data URI so the chess
+    // module works under file:// (fetch rejects the file scheme there, which
+    // used to hang wasm instantiation). Vite only applies `?inline` to files
+    // listed in assetsInclude, and .wasm is not an asset by default.
+    assetsInclude: [
+      '**/ffish-es6/**/*.wasm',
+    ],
+
     build: {
       rolldownOptions: {
         input: {

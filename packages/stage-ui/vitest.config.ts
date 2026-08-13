@@ -11,6 +11,12 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig(({ mode }) => {
   return {
     root: import.meta.dirname,
+    // ffish-module.test.ts imports ffish.wasm via `?inline`; Vite only applies
+    // `?inline` to files listed in assetsInclude, and .wasm is not an asset by
+    // default.
+    assetsInclude: [
+      '**/ffish-es6/**/*.wasm',
+    ],
     plugins: [
       Info(),
     ],

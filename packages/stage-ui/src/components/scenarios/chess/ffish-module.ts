@@ -12,11 +12,44 @@ import type { Variant } from './shared'
 // `ffish.d.ts` describes the es6 factory shape for both packages, so a wrong
 // `ffish` import still typechecks but fails only at runtime.
 import initFfish from 'ffish-es6'
-// The ffish glue locates its sibling `.wasm` at runtime; Vite rewrites this to
-// the emitted asset URL, so no engine files need to be served separately. ffish
-// is single-threaded (no SharedArrayBuffer), so it runs without cross-origin
-// isolation — unlike the pthread Fairy-Stockfish engine build.
-import ffishWasmUrl from 'ffish-es6/ffish.wasm?url'
+// Inlined as a data URI so the bytes travel inside the JS bundle instead of
+// being fetched at runtime. ffish is single-threaded (no SharedArrayBuffer),
+// so it runs without cross-origin isolation — unlike the pthread
+// Fairy-Stockfish engine build.
+import ffishWasmInline from 'ffish-es6/ffish.wasm?inline'
+
+// NOTICE:
+// The ffish Emscripten glue loads its `.wasm` with `fetch(wasmBinaryFile)` and
+// that promise chain has no catch handler. In the production Electron renderer
+// the app runs over `file://`, where fetch rejects for the file scheme; the
+// "wasm-instantiate" run dependency added by createWasm() is then never
+// released, so `Module.ready` never resolves and `await ffishModule()` hangs
+// forever with no error (blank board). Dev mode and stage-web use http(s), so
+// only the packaged desktop app was affected.
+// Passing the bytes as `wasmBinary` bypasses fetch entirely: the glue's
+// getBinaryPromise() resolves `wasmBinary` directly instead of fetching.
+// Verified against ffish-es6@0.7.9 ffish.js (getBinaryPromise / instantiateAsync).
+// Removal condition: only if the desktop renderer stops serving over file://.
+const FFISH_WASM_BINARY = decodeInlineWasm(ffishWasmInline)
+
+/**
+ * Decodes a Vite `?inline` data URI (base64) into wasm bytes.
+ *
+ * Before:
+ * - "data:application/wasm;base64,AGFzbQEAAA..."
+ *
+ * After:
+ * - ArrayBuffer containing the decoded bytes
+ */
+function decodeInlineWasm(dataUri: string): ArrayBuffer {
+  const base64 = dataUri.slice(dataUri.indexOf(',') + 1)
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++)
+    bytes[i] = binary.charCodeAt(i)
+
+  return bytes.buffer
+}
 
 // One WASM module instance is shared by every board and the search engine;
 // initializing it is the expensive step, so it is created once and reused.
@@ -24,7 +57,7 @@ let ffishModulePromise: ReturnType<typeof initFfish> | undefined
 
 /** Returns the shared ffish module, initializing the WASM runtime on first use. */
 export function ffishModule(): ReturnType<typeof initFfish> {
-  ffishModulePromise ??= initFfish({ locateFile: file => (file.endsWith('.wasm') ? ffishWasmUrl : file) })
+  ffishModulePromise ??= initFfish({ wasmBinary: FFISH_WASM_BINARY })
   return ffishModulePromise
 }
 
