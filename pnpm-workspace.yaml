@@ -427,10 +427,23 @@ catalog:
   zod: ^4.3.6
   zod-to-json-schema: ^3.25.2
 catalogs:
+  # NOTICE:
+  # 4.1.10 is a hard floor for browser mode, not a routine bump.
+  #
+  # Up to 4.1.9 the orchestrator posted its `prepare` event on the
+  # `vitest:<sessionId>` BroadcastChannel as soon as the tester iframe fired
+  # `load`. The tester registers its own channel listener at the end of its
+  # module evaluation, which can finish *after* that — measured here at ~15ms
+  # late. BroadcastChannel does not buffer, so the event was dropped and both
+  # sides waited forever: every `*.browser.test.ts` hung after printing the
+  # banner, with no error and no timeout.
+  #
+  # 4.1.10 added the missing readiness handshake (`markReady`/`waitForReady`),
+  # so `prepare` is only sent once the tester has announced itself.
   vitest:
-    '@vitest/browser-playwright': ^4.1.4
-    '@vitest/coverage-v8': ^4.1.4
-    vitest: ^4.1.4
+    '@vitest/browser-playwright': ^4.1.10
+    '@vitest/coverage-v8': ^4.1.10
+    vitest: ^4.1.10
   xsai:
     unspeech: ^0.1.14
 
