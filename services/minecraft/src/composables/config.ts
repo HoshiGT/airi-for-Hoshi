@@ -96,6 +96,17 @@ export const configSchema = z.object({
     // player so the bot recognizes its master in-world (e.g. does not flee when the master hits it).
     masterUsername: z.string().trim().min(1).optional(),
   }),
+  brain: z.object({
+    /**
+     * Minimum interval between turns the brain schedules for itself: the follow-up loop it
+     * drives on its own (action feedback, no-action/vision follow-ups, burst-guard alerts).
+     *
+     * This is the pacing that used to be missing: with a fast model the loop ran about once
+     * a second and spammed public server chat. External events (player chat, damage, ...)
+     * never wait on this clock. Set to 0 to disable the pacing entirely.
+     */
+    selfTriggerMinIntervalMs: z.coerce.number().int().min(0).default(3000),
+  }),
   airi: z.object({
     wsBaseUrl: wsUrlString('AIRI_WS_BASEURL'),
     clientName: requiredString('AIRI_CLIENT_NAME'),
@@ -142,6 +153,9 @@ const defaultConfig: Omit<Config, 'openai'> = {
     width: 640,
     height: 400,
     viewDistance: 4,
+  },
+  brain: {
+    selfTriggerMinIntervalMs: 3000,
   },
 }
 
@@ -190,6 +204,9 @@ export function initEnv(): void {
       clientName: env.AIRI_CLIENT_NAME ?? defaultConfig.airi.clientName,
       token: env.AIRI_WS_TOKEN || defaultConfig.airi.token,
     },
+    brain: {
+      selfTriggerMinIntervalMs: env.BRAIN_SELF_TRIGGER_MIN_INTERVAL_MS || defaultConfig.brain.selfTriggerMinIntervalMs,
+    },
   })
 
   if (!parsedConfig.success) {
@@ -203,6 +220,7 @@ export function initEnv(): void {
   config.bot = parsedConfig.data.bot
   config.airi = parsedConfig.data.airi
   config.debug = parsedConfig.data.debug
+  config.brain = parsedConfig.data.brain
 
   logger.withFields({
     config: {

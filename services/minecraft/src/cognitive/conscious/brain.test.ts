@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
-import { config } from '../../composables/config'
+import { config, configSchema } from '../../composables/config'
 import { ActionError } from '../../utils/errors'
 import { Brain } from './brain'
 
@@ -36,7 +36,11 @@ function createDeps(llmText: string) {
     baseUrl: 'https://example.com/v1',
     model: 'test-model',
     reasoningModel: 'test-reasoning-model',
+    reasoningEffort: 'medium',
   }
+  // Self-triggered turn pacing disabled by default so tests that drive processEvent directly
+  // do not inherit real multi-second delays; pacing tests opt back in with a real interval.
+  config.brain = { selfTriggerMinIntervalMs: 0 }
 
   const logger = {
     log: vi.fn(),
@@ -362,7 +366,16 @@ inv;
     expect(enqueueSpy).not.toHaveBeenCalled()
   })
 
-  it('does not pass a timeout to llmAgent calls', async () => {
+  // ROOT CAUSE:
+  //
+  // This assertion used to require `timeoutMs` to be undefined while the brain had always passed
+  // 60s, so it failed on every run and was left red. Resolving it in the other direction — dropping
+  // the argument to match the test — reads as harmless but is not: `LLMAgent.callLLM` treats an
+  // omitted `timeoutMs` as `null` and installs no timer, so a provider that stops responding
+  // mid-request would hang the brain with no wall-clock escape.
+  //
+  // The timeout is the load-bearing side, so the assertion moved instead.
+  it('passes the wall-clock attempt timeout to llmAgent calls', async () => {
     const deps: any = createDeps('await chat("hi")')
     deps.llmAgent.callLLM = vi.fn(async () => ({
       text: 'await chat("hi")',
@@ -374,7 +387,7 @@ inv;
 
     expect(deps.llmAgent.callLLM).toHaveBeenCalledTimes(1)
     const llmCallOptions = deps.llmAgent.callLLM.mock.calls[0]?.[0]
-    expect(llmCallOptions?.timeoutMs).toBeUndefined()
+    expect(llmCallOptions?.timeoutMs).toBe(60_000)
     expect(llmCallOptions?.abortSignal).toBeInstanceOf(AbortSignal)
   })
 
@@ -773,5 +786,168 @@ describe('brain control action queue', () => {
         && event?.payload?.action?.tool === 'goToPlayer'
     })
     expect(goToPlayerFailure).toBeUndefined()
+  })
+})
+
+describe('brain self-triggered turn pacing', () => {
+  it('enqueues the first self-triggered event without delay', async () => {
+    const brain: any = new Brain(createDeps('await skip()'))
+    config.brain.selfTriggerMinIntervalMs = 100
+    const enqueueSpy = vi.fn(async () => undefined)
+    brain.enqueueEvent = enqueueSpy
+
+    const startedAt = Date.now()
+    await brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+
+    expect(enqueueSpy).toHaveBeenCalledTimes(1)
+    expect(Date.now() - startedAt).toBeLessThan(50)
+  })
+
+  it('delays a self-triggered event scheduled within the configured interval', async () => {
+    const brain: any = new Brain(createDeps('await skip()'))
+    config.brain.selfTriggerMinIntervalMs = 100
+    const enqueueSpy = vi.fn(async () => undefined)
+    brain.enqueueEvent = enqueueSpy
+
+    await brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+    await brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+
+    expect(enqueueSpy).toHaveBeenCalledTimes(2)
+    const enqueueTimes = enqueueSpy.mock.calls.map((call: any[]) => call[1].timestamp)
+    expect(enqueueTimes[1] - enqueueTimes[0]).toBeGreaterThanOrEqual(80)
+  })
+
+  it('spaces two self-triggered events scheduled back-to-back', async () => {
+    const brain: any = new Brain(createDeps('await skip()'))
+    config.brain.selfTriggerMinIntervalMs = 100
+    const enqueueSpy = vi.fn(async () => undefined)
+    brain.enqueueEvent = enqueueSpy
+
+    // Both follow-ups are scheduled from the same turn; slots must be reserved per event or the
+    // second one would fire on the same moment and defeat the pacing.
+    void brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+    void brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+
+    await vi.waitFor(() => expect(enqueueSpy).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    const enqueueTimes = enqueueSpy.mock.calls.map((call: any[]) => call[1].timestamp)
+    expect(enqueueTimes[1] - enqueueTimes[0]).toBeGreaterThanOrEqual(80)
+  })
+
+  it('does not delay external perception turns while a self-triggered slot is pending', async () => {
+    const deps: any = createDeps('await skip()')
+    config.brain.selfTriggerMinIntervalMs = 400
+    const brain: any = new Brain(deps)
+    brain.enqueueEvent = vi.fn(async () => undefined)
+
+    // Reserve a far-future slot on the self-triggered lane: player chat must still be processed
+    // immediately, it never waits on that clock.
+    void brain.scheduleSelfTriggeredEvent({} as any, createNoActionFollowupEvent())
+
+    const startedAt = Date.now()
+    await brain.processEvent({} as any, createPerceptionEvent())
+
+    expect(deps.llmAgent.callLLM).toHaveBeenCalledTimes(1)
+    expect(Date.now() - startedAt).toBeLessThan(300)
+  })
+
+  it('paces the follow-ups scheduled by consecutive self-triggered turns', async () => {
+    const brain: any = new Brain(createDeps('1 + 1'))
+    config.brain.selfTriggerMinIntervalMs = 80
+    const enqueueSpy = vi.fn(async () => undefined)
+    brain.enqueueEvent = enqueueSpy
+    const bot = { bot: { chat: vi.fn() } }
+
+    // Each turn evaluates '1 + 1', produces no actions and schedules its own follow-up (the
+    // third one flips to the stagnation alert); the follow-ups must be spaced by the interval.
+    await brain.processEvent(bot as any, createNoActionFollowupEvent())
+    await brain.processEvent(bot as any, createNoActionFollowupEvent())
+    await brain.processEvent(bot as any, createNoActionFollowupEvent())
+
+    await vi.waitFor(() => expect(enqueueSpy).toHaveBeenCalledTimes(3), { timeout: 2000 })
+    const enqueueTimes = enqueueSpy.mock.calls.map((call: any[]) => call[1].timestamp)
+    expect(enqueueTimes[1] - enqueueTimes[0]).toBeGreaterThanOrEqual(60)
+    expect(enqueueTimes[2] - enqueueTimes[1]).toBeGreaterThanOrEqual(60)
+  })
+})
+
+describe('brain public chat dedup', () => {
+  function createChatDeps(script: string) {
+    const deps: any = createDeps(script)
+    deps.taskExecutor.getAvailableActions = vi.fn(() => [createChatAction()])
+    return deps
+  }
+
+  it('sends the first chat message and suppresses an immediate verbatim repeat', async () => {
+    const deps: any = createChatDeps('await chat({ message: "我去找木头" }); await chat({ message: "我去找木头" })')
+    const brain: any = new Brain(deps)
+
+    await brain.processEvent({} as any, createPerceptionEvent())
+
+    expect(deps.taskExecutor.executeActionWithResult).toHaveBeenCalledTimes(1)
+
+    // The suppression notice must reach the model on its next turn, or it keeps repeating the
+    // same sentence believing it was sent. It rides in the [SCRIPT] Last eval line.
+    const nextTurnMessage = brain.buildUserMessage(createPerceptionEvent(), 'ctx')
+    expect(nextTurnMessage).toContain('Chat suppressed')
+  })
+
+  it('suppresses a near-duplicate that only differs in punctuation', async () => {
+    const deps: any = createChatDeps('await chat({ message: "我去找木头" }); await chat({ message: "我去找木头!!" })')
+    const brain: any = new Brain(deps)
+
+    await brain.processEvent({} as any, createPerceptionEvent())
+
+    expect(deps.taskExecutor.executeActionWithResult).toHaveBeenCalledTimes(1)
+  })
+
+  it('still sends messages that differ meaningfully from the recent window', async () => {
+    const deps: any = createChatDeps('await chat({ message: "我去找木头" }); await chat({ message: "好的,我先去砍树" })')
+    const brain: any = new Brain(deps)
+
+    await brain.processEvent({} as any, createPerceptionEvent())
+
+    expect(deps.taskExecutor.executeActionWithResult).toHaveBeenCalledTimes(2)
+  })
+
+  it('forgets messages that leave the recent window', async () => {
+    const script = [
+      'await chat({ message: "A1" })',
+      'await chat({ message: "B2" })',
+      'await chat({ message: "C3" })',
+      'await chat({ message: "D4" })',
+      'await chat({ message: "A1" })',
+    ].join('; ')
+    const deps: any = createChatDeps(script)
+    const brain: any = new Brain(deps)
+
+    await brain.processEvent({} as any, createPerceptionEvent())
+
+    // Window is the last 3 messages, so by the fifth call "A1" has fallen out and is sent again.
+    expect(deps.taskExecutor.executeActionWithResult).toHaveBeenCalledTimes(5)
+  })
+})
+
+describe('brain pacing config', () => {
+  function parseConfigWith(brain: { selfTriggerMinIntervalMs?: string } = {}) {
+    const base = {
+      openai: { apiKey: 'test', baseUrl: 'http://localhost:1234/v1', model: 'test', reasoningModel: 'test' },
+      airi: { wsBaseUrl: 'ws://localhost:1234/ws', clientName: 'test' },
+      debug: {},
+      vision: {},
+      bot: { username: 'test-bot', host: 'localhost', port: 25565 },
+    }
+    return configSchema.parse({ ...base, brain })
+  }
+
+  it('defaults the self-triggered turn interval to 3 seconds', () => {
+    const parsed = parseConfigWith()
+
+    expect(parsed.brain.selfTriggerMinIntervalMs).toBe(3000)
+  })
+
+  it('accepts env-provided interval values and allows 0 to disable pacing', () => {
+    const parsed = parseConfigWith({ selfTriggerMinIntervalMs: '0' })
+
+    expect(parsed.brain.selfTriggerMinIntervalMs).toBe(0)
   })
 })

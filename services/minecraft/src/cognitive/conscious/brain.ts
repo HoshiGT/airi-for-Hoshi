@@ -220,6 +220,52 @@ function stringifyForLog(value: unknown): string {
 }
 
 /**
+ * Fold a chat message into the shape duplicate detection compares: case-folded, whitespace
+ * collapsed, punctuation dropped. "我去找木头" and "我去找木头!!" then compare equal, which is the
+ * exact "repeats the previous sentence" symptom from the fast-model spam loop.
+ */
+function normalizeChatMessage(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\p{P}+/gu, '')
+    .trim()
+}
+
+/**
+ * Classic Levenshtein edit distance over code points, computed with a two-row DP so long
+ * messages do not allocate an n×m matrix.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const from = [...a]
+  const to = [...b]
+
+  let previousRow = Array.from({ length: to.length + 1 }, (_, index) => index)
+  for (let rowIndex = 1; rowIndex <= from.length; rowIndex++) {
+    const currentRow = [rowIndex]
+    for (let columnIndex = 1; columnIndex <= to.length; columnIndex++) {
+      const substitutionCost = from[rowIndex - 1] === to[columnIndex - 1] ? 0 : 1
+      currentRow[columnIndex] = Math.min(
+        previousRow[columnIndex]! + 1, // deletion
+        currentRow[columnIndex - 1]! + 1, // insertion
+        previousRow[columnIndex - 1]! + substitutionCost,
+      )
+    }
+    previousRow = currentRow
+  }
+
+  return previousRow[to.length]!
+}
+
+/** 1 for identical strings, down to 0; proportional to the longest string, so short edits on short messages cost more. */
+function chatSimilarity(a: string, b: string): number {
+  const maxLength = Math.max(a.length, b.length)
+  if (maxLength === 0)
+    return 1
+  return 1 - levenshteinDistance(a, b) / maxLength
+}
+
+/**
  * Builds this turn's user message, carrying a rendered frame alongside the text when the bot took
  * one for itself.
  *
@@ -308,6 +354,16 @@ export function trimConversationHistory(history: Message[]): Message[] {
 const NO_ACTION_FOLLOWUP_BUDGET_DEFAULT = 3
 const NO_ACTION_FOLLOWUP_BUDGET_MAX = 8
 const NO_ACTION_STAGNATION_REPEAT_LIMIT = 2
+
+/**
+ * Wall-clock ceiling on a single LLM attempt.
+ *
+ * NOTICE: this must stay here — `LLMAgent.callLLM` has no fallback of its own. An omitted
+ * `timeoutMs` resolves to `null` there (`llm-agent.ts`), which installs no timer at all, so a
+ * provider that accepts the connection and then never responds would wedge the brain until
+ * something else aborts it. The abort signal only covers pause/destroy, which are operator
+ * actions — nothing fires on its own.
+ */
 const DEFAULT_LLM_ATTEMPT_TIMEOUT_MS = 60_000
 const ERROR_BURST_GUARD_SOURCE_ID = 'brain:error_burst_guard'
 const ERROR_BURST_THRESHOLD = 3
@@ -315,6 +371,31 @@ const ERROR_BURST_WINDOW_TURNS = 5
 const MAX_EVENT_QUEUE_LENGTH = 256
 const MAX_CONSECUTIVE_HIGH_PRIORITY_TURNS = 8
 const PAUSE_ABORT_ERROR_NAME = 'AbortError'
+
+/**
+ * How many of the bot's own public chat messages are kept for duplicate suppression.
+ *
+ * Window of 3: the self-triggered spam loop we are guarding against emits the same sentence (or
+ * a punctuation-tweaked copy) on consecutive turns, so the newest message alone catches most of
+ * it — but 3 also catches the short A/B/A alternation ("好的，我去看看" / "好的，我去看看!!") that
+ * a window of 1 misses. Anything longer would start suppressing legitimate re-use of common
+ * phrases after the bot has said several different things in between, so 3 is the trade-off.
+ */
+const PUBLIC_CHAT_DEDUP_WINDOW = 3
+
+/**
+ * Edit-distance similarity above which a chat message counts as a near-duplicate of a remembered
+ * one (1 = identical). Punctuation is stripped before comparing, so verbatim repeats already
+ * match at 1.0; 0.85 only catches messages of ~7+ characters that differ by a single edit
+ * (e.g. one swapped or added word) without conflating genuinely different short replies.
+ */
+const PUBLIC_CHAT_DEDUP_SIMILARITY_THRESHOLD = 0.85
+
+/**
+ * What the `chat` tool returns instead of sending a suppressed duplicate. Compared by identity
+ * where the outcome is surfaced back to the model, so keep it one stable string.
+ */
+const CHAT_SUPPRESSED_RESULT = 'Chat suppressed: duplicate of a message you already sent. Say something new or act instead.'
 
 /**
  * Turn a cryptic sandbox runtime error into actionable guidance the LLM can act on next turn.
@@ -406,6 +487,16 @@ export class Brain {
   private visionFollowupStreak = 0
   private errorBurstGuardState: ErrorBurstGuardState | null = null
   private errorBurstGuardSuppressUntilTurnId = 0
+  /**
+   * Earliest moment (ms epoch) a turn the brain scheduled for itself may be enqueued.
+   * Reserved per-event at scheduling time; see {@link scheduleSelfTriggeredEvent}.
+   */
+  private selfTriggeredNextReadyAt = 0
+  /**
+   * Normalized tail of public chat messages that were actually sent, newest last. Cache state
+   * for duplicate suppression only; see {@link PUBLIC_CHAT_DEDUP_WINDOW}.
+   */
+  private recentPublicChatMessages: string[] = []
   private unsubscribeEventBus: (() => void) | null = null
   private onActionCompleted: ((...args: any[]) => void) | null = null
   private onActionFailed: ((...args: any[]) => void) | null = null
@@ -508,7 +599,7 @@ export class Brain {
       }
 
       if (action.tool === 'chat' && action.params?.feedback === true) {
-        this.enqueueEvent(bot, {
+        this.scheduleSelfTriggeredEvent(bot, {
           type: 'feedback',
           payload: { status: 'success', action, result },
           source: { type: 'system', id: 'executor' },
@@ -1098,7 +1189,7 @@ export class Brain {
     if (event.source.type === 'system' && event.source.id === ERROR_BURST_GUARD_SOURCE_ID)
       return
 
-    void this.enqueueEvent(bot, {
+    void this.scheduleSelfTriggeredEvent(bot, {
       type: 'system_alert',
       payload: {
         reason: 'error_burst_guard',
@@ -1421,7 +1512,7 @@ export class Brain {
           if (this.pendingControlActions.length === 0) {
             const completedCount = this.completedControlActionsSinceLastFeedback
             this.completedControlActionsSinceLastFeedback = 0
-            await this.enqueueEvent(bot, {
+            await this.scheduleSelfTriggeredEvent(bot, {
               type: 'feedback',
               payload: {
                 status: 'success',
@@ -1495,7 +1586,7 @@ export class Brain {
             },
           })
 
-          await this.enqueueEvent(bot, {
+          await this.scheduleSelfTriggeredEvent(bot, {
             type: 'feedback',
             payload: {
               status: 'failure',
@@ -1558,7 +1649,7 @@ export class Brain {
     })
 
     const result = await this.deps.taskExecutor.executeActionWithResult({ tool: 'stop', params: {} })
-    void this.enqueueEvent(bot, {
+    void this.scheduleSelfTriggeredEvent(bot, {
       type: 'feedback',
       payload: {
         status: 'success',
@@ -1579,6 +1670,48 @@ export class Brain {
       clearedPendingCount: clearedCount,
       cancelledActiveActionId,
     }
+  }
+
+  /**
+   * Execute a `chat` action unless the message repeats something the bot recently said
+   * publicly, in which case nothing is sent and the model gets the suppression notice as
+   * the tool's return value instead.
+   *
+   * The message is remembered only after a successful send, so a failed send (mineflayer
+   * throws) does not poison the window and the model can retry the same text next turn.
+   */
+  private async executeChatAction(action: ActionInstruction): Promise<unknown> {
+    const message = typeof action.params?.message === 'string' ? action.params.message : ''
+
+    if (this.isDuplicatePublicChatMessage(message)) {
+      return CHAT_SUPPRESSED_RESULT
+    }
+
+    const result = await this.deps.taskExecutor.executeActionWithResult(action)
+    this.rememberPublicChatMessage(message)
+    return result
+  }
+
+  private isDuplicatePublicChatMessage(message: string): boolean {
+    const normalized = normalizeChatMessage(message)
+    // An empty message has nothing meaningful to compare; let the chat action reject it.
+    if (!normalized)
+      return false
+
+    return this.recentPublicChatMessages.some(recent =>
+      normalized === recent
+      || chatSimilarity(normalized, recent) >= PUBLIC_CHAT_DEDUP_SIMILARITY_THRESHOLD,
+    )
+  }
+
+  private rememberPublicChatMessage(message: string): void {
+    const normalized = normalizeChatMessage(message)
+    if (!normalized)
+      return
+
+    this.recentPublicChatMessages.push(normalized)
+    if (this.recentPublicChatMessages.length > PUBLIC_CHAT_DEDUP_WINDOW)
+      this.recentPublicChatMessages.shift()
   }
 
   private queueNoActionFollowup(
@@ -1641,7 +1774,7 @@ export class Brain {
         timestamp: Date.now(),
       }
 
-      void this.enqueueEvent(bot, followupEvent).catch(err =>
+      void this.scheduleSelfTriggeredEvent(bot, followupEvent).catch(err =>
         this.deps.logger.withError(err).error('Brain: Failed to enqueue no-action budget alert'),
       )
       return
@@ -1679,7 +1812,7 @@ export class Brain {
       },
     })
     this.debugService.log('DEBUG', 'Scheduling budgeted no-action follow-up turn')
-    void this.enqueueEvent(bot, followupEvent).catch(err =>
+    void this.scheduleSelfTriggeredEvent(bot, followupEvent).catch(err =>
       this.deps.logger.withError(err).error('Brain: Failed to enqueue no-action follow-up'),
     )
   }
@@ -1722,7 +1855,7 @@ export class Brain {
         text: `Blocked vision follow-up after ${VISION_FOLLOWUP_STREAK_LIMIT} consecutive looks`,
       })
 
-      void this.enqueueEvent(bot, {
+      void this.scheduleSelfTriggeredEvent(bot, {
         type: 'system_alert',
         payload: {
           reason: 'vision_followup_exhausted',
@@ -1747,7 +1880,7 @@ export class Brain {
       metadata: { streak: this.visionFollowupStreak },
     })
 
-    void this.enqueueEvent(bot, {
+    void this.scheduleSelfTriggeredEvent(bot, {
       type: 'system_alert',
       payload: {
         reason: 'vision_frame_ready',
@@ -1761,6 +1894,47 @@ export class Brain {
   }
 
   // --- Event Queue Logic ---
+
+  /**
+   * Enqueue a follow-up turn the brain arranged for itself, spaced from the previous
+   * self-triggered turn by `config.brain.selfTriggerMinIntervalMs`.
+   *
+   * The slot is reserved when the event is scheduled, not when it runs, so two follow-ups
+   * scheduled back-to-back by the same turn (e.g. a no-action follow-up plus a vision
+   * follow-up) do not collapse onto the same moment and defeat the pacing. Waiting happens
+   * here, outside the triggering turn, so the turn that schedules the event still completes
+   * at full speed.
+   *
+   * External events deliberately bypass this: the perception handler calls `enqueueEvent`
+   * directly, so player chat and damage keep their original latency no matter how busy the
+   * self-triggered lane is.
+   */
+  private async scheduleSelfTriggeredEvent(bot: MineflayerWithAgents, event: BotEvent): Promise<void> {
+    const now = Date.now()
+    const intervalMs = config.brain.selfTriggerMinIntervalMs
+    const dueAt = Math.max(now, this.selfTriggeredNextReadyAt)
+    this.selfTriggeredNextReadyAt = dueAt + intervalMs
+    const waitMs = dueAt - now
+
+    if (waitMs > 0) {
+      this.appendLlmLog({
+        turnId: this.turnCounter,
+        kind: 'scheduler',
+        eventType: event.type,
+        sourceType: event.source.type,
+        sourceId: event.source.id,
+        tags: ['scheduler', 'self_trigger', 'paced'],
+        text: `Pacing self-triggered turn by ${waitMs}ms (min interval ${intervalMs}ms)`,
+        metadata: { waitMs, intervalMs, dueAt },
+      })
+      await sleep(waitMs)
+    }
+
+    // Refresh the timestamp so downstream consumers see when the event was actually
+    // enqueued, not when the triggering turn created it (the wait above can be seconds).
+    event.timestamp = Date.now()
+    await this.enqueueEvent(bot, event)
+  }
 
   private async enqueueEvent(bot: MineflayerWithAgents, event: BotEvent): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -2303,6 +2477,10 @@ export class Brain {
             return this.executeStopAction(bot, turnId)
           }
 
+          if (action.tool === 'chat') {
+            return this.executeChatAction(action)
+          }
+
           const isControlAction = this.isQueueConsumingControlAction(action, actionDef)
           if (isControlAction)
             return this.enqueueControlAction(bot, action, turnId)
@@ -2314,12 +2492,19 @@ export class Brain {
         },
       )
 
+      // A suppressed chat never left the bot, so tell the model on its next turn instead of
+      // letting it repeat the same sentence while believing it was sent. The notice rides in the
+      // replay outcome logs, which `buildUserMessage` surfaces as `[SCRIPT] Last eval ... logs=...`.
+      const chatSuppressionNotices = runResult.actions
+        .filter(item => item.action.tool === 'chat' && item.result === CHAT_SUPPRESSED_RESULT)
+        .map(() => CHAT_SUPPRESSED_RESULT)
+
       this.lastReplOutcome = {
         actionCount: runResult.actions.length,
         okCount: runResult.actions.filter(item => item.ok).length,
         errorCount: runResult.actions.filter(item => !item.ok).length,
         returnValue: runResult.returnValue,
-        logs: runResult.logs.slice(-3),
+        logs: [...chatSuppressionNotices, ...runResult.logs].slice(-3),
         updatedAt: Date.now(),
       }
       this.appendLlmLog({
@@ -2422,7 +2607,7 @@ export class Brain {
         durationMs: 0,
         timestamp: Date.now(),
       })
-      void this.enqueueEvent(bot, {
+      void this.scheduleSelfTriggeredEvent(bot, {
         type: 'feedback',
         payload: { status: 'failure', error: augmentedError },
         source: { type: 'system', id: 'brain' },
