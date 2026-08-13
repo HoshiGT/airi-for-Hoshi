@@ -9,9 +9,23 @@ import type { ViewerFeed } from './viewer-feed'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
+// NOTICE:
+// Default import, then read the property — the named import fails at link time.
+//
+// prismarine-viewer is CommonJS and assigns this one inside an object literal:
+// `supportedVersions: require('./viewer').supportedVersions` (index.js:6). Node's
+// cjs-module-lexer only recognises statically analysable assignments, so it never
+// lists `supportedVersions` among the named exports, and
+// `import { supportedVersions } from 'prismarine-viewer'` throws
+// "does not provide an export named" before any code runs — taking the whole bot
+// down at startup, not just vision. Sibling `mineflayer` is detected and would
+// have worked, which is what makes the failure look arbitrary.
+//
+// Removal condition: prismarine-viewer ships ESM or a static re-export.
+import prismarineViewer from 'prismarine-viewer'
+
 import { errorMessageFrom } from '@moeru/std'
 import { chromium } from 'playwright'
-import { supportedVersions } from 'prismarine-viewer'
 
 import { config } from '../composables/config'
 import { useLogger } from '../utils/logger'
@@ -462,7 +476,7 @@ export class BotCamera {
       return this.bridge
 
     const bot = this.mineflayer.bot
-    const targetVersion = pickViewerVersion(bot.version, supportedVersions)
+    const targetVersion = pickViewerVersion(bot.version, prismarineViewer.supportedVersions)
     this.bridge = createBlockStateBridge(bot.registry, targetVersion)
 
     if (this.bridge.translating) {
