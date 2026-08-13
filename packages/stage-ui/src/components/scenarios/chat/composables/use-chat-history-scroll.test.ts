@@ -431,4 +431,108 @@ describe('useChatHistoryScroll', () => {
 
     scope.stop()
   })
+
+  it('delegates the mount scroll and new-message reveal to the virtualScroll hooks', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    defineScrollMetrics(container, {
+      clientHeight: 240,
+      scrollHeight: 480,
+      scrollTop: 240,
+    })
+
+    const messageList = ref<ChatHistoryItem[]>([
+      createUserMessage('user-1', 'hello', 1),
+      createAssistantMessage('assistant-1', 'hi', 2),
+    ])
+    renderMessages(container, messageList.value)
+
+    const scrollToBottom = vi.fn(() => true)
+    const scrollToMessage = vi.fn(() => true)
+    const scrollIntoView = vi.fn()
+    setContainerScrollTo(container, vi.fn())
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+
+    const frameController = createRequestAnimationFrameController()
+    const scope = effectScope()
+
+    scope.run(() => {
+      useChatHistoryScroll({
+        containerRef: ref(container),
+        messages: messageList,
+        getKey: message => message.id!,
+        virtualScroll: {
+          scrollToBottom,
+          scrollToMessage,
+        },
+      })
+    })
+
+    await flushDom()
+    frameController.runAllFrames()
+    await flushDom()
+
+    expect(scrollToBottom).toHaveBeenCalledTimes(1)
+
+    messageList.value = [...messageList.value, createAssistantMessage('assistant-2', 'new tail', 3)]
+    renderMessages(container, messageList.value)
+
+    await flushDom()
+
+    expect(scrollToMessage).toHaveBeenCalledTimes(1)
+    expect(scrollToMessage).toHaveBeenCalledWith('assistant-2')
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    scope.stop()
+  })
+
+  it('falls back to DOM scrollIntoView when the virtualScroll hook declines the reveal', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    defineScrollMetrics(container, {
+      clientHeight: 240,
+      scrollHeight: 480,
+      scrollTop: 240,
+    })
+
+    const messageList = ref<ChatHistoryItem[]>([
+      createUserMessage('user-1', 'hello', 1),
+      createAssistantMessage('assistant-1', 'hi', 2),
+    ])
+    renderMessages(container, messageList.value)
+
+    const scrollToMessage = vi.fn(() => false)
+    const scrollIntoView = vi.fn()
+    setContainerScrollTo(container, vi.fn())
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+
+    const scope = effectScope()
+
+    scope.run(() => {
+      useChatHistoryScroll({
+        containerRef: ref(container),
+        messages: messageList,
+        getKey: message => message.id!,
+        virtualScroll: {
+          scrollToBottom: () => false,
+          scrollToMessage,
+        },
+      })
+    })
+
+    await flushDom()
+    scrollIntoView.mockClear()
+
+    messageList.value = [...messageList.value, createAssistantMessage('assistant-2', 'new tail', 3)]
+    renderMessages(container, messageList.value)
+
+    await flushDom()
+
+    expect(scrollToMessage).toHaveBeenCalledTimes(1)
+    expect(scrollToMessage).toHaveBeenCalledWith('assistant-2')
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
+
+    scope.stop()
+  })
 })

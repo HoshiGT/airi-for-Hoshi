@@ -169,6 +169,7 @@ catalog:
   '@shopify/draggable': ^1.2.1
   '@snazzah/davey': ^0.1.11
   '@takumi-rs/image-response': 1.0.0-beta.20
+  '@tanstack/vue-virtual': ^3.13.13
   '@tresjs/cientos': ^5.7.0
   '@tresjs/core': ^5.8.0
   '@tresjs/post-processing': ^3.7.1

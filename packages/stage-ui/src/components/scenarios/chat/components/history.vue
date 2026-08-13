@@ -1,13 +1,14 @@
 <script setup lang="ts">
+import type { ComponentPublicInstance } from 'vue'
+
 import type { ChatAssistantMessage, ChatHistoryItem, ContextMessage } from '../../../../types/chat'
 import type { ChatToolCallRendererRegistry } from './tool-call-renderer'
 
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { computed, provide, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import ChatAssistantItem from './assistant-item.vue'
-import ChatErrorItem from './error-item.vue'
-import ChatUserItem from './user-item.vue'
+import HistoryMessageRow from './history-message-row.vue'
 
 import { useChatHistoryScroll } from '../composables/use-chat-history-scroll'
 import { chatScrollContainerKey } from '../constants'
@@ -37,6 +38,19 @@ const emit = defineEmits<{
   (e: 'toolCallRerun', payload: { message: ChatHistoryItem, index: number, key: string | number, toolCallId: string, toolName: string, args: string }): void
 }>()
 
+// Below this many messages the DOM stays cheap enough that virtual scrolling
+// only adds measurement churn without paying rent; beyond it every extra
+// message adds one more full MarkdownRenderer subtree.
+const MIN_MESSAGES_FOR_VIRTUALIZATION = 40
+// Rough per-role height used until a row is actually measured. User bubbles
+// are short; assistant replies with tool calls and stickers run long.
+const ROW_HEIGHT_ESTIMATE: Record<string, number> = {
+  user: 72,
+  error: 96,
+  assistant: 160,
+}
+const VIRTUAL_OVERSCAN = 8
+
 const chatHistoryRef = ref<HTMLDivElement>()
 provide(chatScrollContainerKey, chatHistoryRef)
 
@@ -50,15 +64,7 @@ const labels = computed(() => ({
 }))
 
 const streaming = computed<ChatAssistantMessage & { context?: ContextMessage } & { createdAt?: number }>(() => props.streamingMessage ?? { role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
-const showStreamingPlaceholder = computed(() => (streaming.value.slices?.length ?? 0) === 0 && !streaming.value.content)
 const streamingTs = computed(() => streaming.value?.createdAt)
-function shouldShowPlaceholder(message: ChatHistoryItem) {
-  const ts = streamingTs.value
-  if (ts == null)
-    return false
-
-  return message.context?.createdAt === ts || message.createdAt === ts
-}
 const renderMessages = computed<ChatHistoryItem[]>(() => {
   if (!props.sending)
     return props.messages
@@ -74,102 +80,121 @@ const renderMessages = computed<ChatHistoryItem[]>(() => {
   return [...props.messages, streaming.value]
 })
 
+const shouldVirtualize = computed(() => renderMessages.value.length > MIN_MESSAGES_FOR_VIRTUALIZATION)
+
+const virtualizer = useVirtualizer(computed(() => ({
+  count: renderMessages.value.length,
+  getScrollElement: () => chatHistoryRef.value ?? null,
+  estimateSize: (index: number) => {
+    const role = renderMessages.value[index]?.role
+    return (role && ROW_HEIGHT_ESTIMATE[role]) ?? 100
+  },
+  overscan: VIRTUAL_OVERSCAN,
+  getItemKey: (index: number) => getChatHistoryItemKey(renderMessages.value[index], index),
+})))
+
+// Vue template refs can also receive component instances; tanstack only cares
+// about elements, so filter before delegating to its measureElement.
+function measureRow(node: Element | ComponentPublicInstance | null) {
+  if (node instanceof Element)
+    virtualizer.value.measureElement(node)
+}
+
+interface HistoryRow {
+  key: string | number
+  index: number
+  message: ChatHistoryItem
+}
+
+// One unified row list for both render modes: the whole history while small,
+// the measured window once virtualized. The padding technique below keeps the
+// rows in normal document flow (so the flex gap still applies) while the
+// container scrolls over the full estimated height.
+const rows = computed<HistoryRow[]>(() => {
+  if (!shouldVirtualize.value) {
+    return renderMessages.value.map((message, index) => ({
+      key: getChatHistoryItemKey(message, index),
+      index,
+      message,
+    }))
+  }
+
+  return virtualizer.value.getVirtualItems().map(item => ({
+    key: String(item.key),
+    index: item.index,
+    message: renderMessages.value[item.index],
+  }))
+})
+
+const listPadding = computed(() => {
+  if (!shouldVirtualize.value)
+    return undefined
+
+  const items = virtualizer.value.getVirtualItems()
+  const lastItem = items[items.length - 1]
+  return {
+    paddingTop: `${items[0]?.start ?? 0}px`,
+    paddingBottom: `${lastItem ? virtualizer.value.getTotalSize() - lastItem.end : 0}px`,
+  }
+})
+
 useChatHistoryScroll({
   containerRef: chatHistoryRef,
   messages: renderMessages,
   getKey: getChatHistoryItemKey,
+  virtualScroll: {
+    scrollToMessage: (key) => {
+      if (!shouldVirtualize.value)
+        return false
+
+      const index = renderMessages.value.findIndex((message, i) => getChatHistoryItemKey(message, i) === key)
+      if (index < 0)
+        return false
+
+      virtualizer.value.scrollToIndex(index, { align: 'start' })
+      return true
+    },
+    scrollToBottom: () => {
+      if (!shouldVirtualize.value)
+        return false
+
+      virtualizer.value.scrollToIndex(renderMessages.value.length - 1, { align: 'end' })
+      return true
+    },
+  },
 })
-
-function emitCopyMessage(message: ChatHistoryItem, index: number) {
-  emit('copyMessage', {
-    message,
-    index,
-    key: getChatHistoryItemKey(message, index),
-  })
-}
-
-function emitDeleteMessage(message: ChatHistoryItem, index: number) {
-  emit('deleteMessage', {
-    message,
-    index,
-    key: getChatHistoryItemKey(message, index),
-  })
-}
-
-function emitRetryMessage(message: ChatHistoryItem, index: number) {
-  emit('retryMessage', {
-    message,
-    index,
-    key: getChatHistoryItemKey(message, index),
-  })
-}
-
-function emitBranchMessage(message: ChatHistoryItem, index: number) {
-  emit('branchMessage', {
-    message,
-    index,
-    key: getChatHistoryItemKey(message, index),
-  })
-}
-
-function emitToolCallRerun(
-  message: ChatHistoryItem,
-  index: number,
-  payload: { toolCallId: string, toolName: string, args: string },
-) {
-  emit('toolCallRerun', {
-    message,
-    index,
-    key: getChatHistoryItemKey(message, index),
-    ...payload,
-  })
-}
 </script>
 
 <template>
-  <div ref="chatHistoryRef" flex="~ col" relative h-full w-full overflow-y-auto rounded-xl px="<sm:2" py="<sm:2" :class="variant === 'mobile' ? 'gap-1' : 'gap-2'">
-    <template v-for="(message, index) in renderMessages" :key="getChatHistoryItemKey(message, index)">
+  <div
+    ref="chatHistoryRef"
+    flex="~ col" relative h-full w-full overflow-y-auto rounded-xl px="<sm:2" py="<sm:2"
+    :class="variant === 'mobile' ? 'gap-1' : 'gap-2'"
+    :style="listPadding"
+  >
+    <template v-for="row in rows" :key="row.key">
       <div
-        :data-chat-message-index="index"
-        :data-chat-message-key="String(getChatHistoryItemKey(message, index))"
-        :data-chat-message-role="message.role"
+        :ref="measureRow"
+        :data-index="row.index"
+        :data-chat-message-index="row.index"
+        :data-chat-message-key="String(row.key)"
+        :data-chat-message-role="row.message.role"
       >
-        <ChatErrorItem
-          v-if="message.role === 'error'"
-          :message="message"
-          :label="labels.error"
-          :retry-label="labels.retry"
-          :can-retry="renderMessages[index - 1]?.role === 'user'"
-          :show-placeholder="sending && index === renderMessages.length - 1"
-          :variant="variant"
-          @copy="emitCopyMessage(message, index)"
-          @retry="emitRetryMessage(message, index)"
-          @branch="emitBranchMessage(message, index)"
-          @delete="emitDeleteMessage(message, index)"
-        />
-        <ChatAssistantItem
-          v-else-if="message.role === 'assistant'"
-          :message="message"
-          :label="labels.assistant"
-          :yesterday-label="labels.yesterday"
-          :show-placeholder="shouldShowPlaceholder(message) && showStreamingPlaceholder"
-          :generating="sending && shouldShowPlaceholder(message)"
+        <HistoryMessageRow
+          :message="row.message"
+          :index="row.index"
+          :labels="labels"
+          :sending="sending"
+          :streaming-ts="streamingTs"
+          :prev-role="renderMessages[row.index - 1]?.role ?? null"
+          :is-last="row.index === renderMessages.length - 1"
           :variant="variant"
           :tool-call-renderers="toolCallRenderers"
-          @copy="emitCopyMessage(message, index)"
-          @branch="emitBranchMessage(message, index)"
-          @delete="emitDeleteMessage(message, index)"
-          @tool-call-rerun="emitToolCallRerun(message, index, $event)"
-        />
-        <ChatUserItem
-          v-else-if="message.role === 'user'"
-          :message="message"
-          :label="labels.user"
-          :yesterday-label="labels.yesterday"
-          :variant="variant"
-          @copy="emitCopyMessage(message, index)"
-          @branch="emitBranchMessage(message, index)"
-          @delete="emitDeleteMessage(message, index)"
+          @copy-message="emit('copyMessage', $event)"
+          @delete-message="emit('deleteMessage', $event)"
+          @retry-message="emit('retryMessage', $event)"
+          @branch-message="emit('branchMessage', $event)"
+          @tool-call-rerun="emit('toolCallRerun', $event)"
         />
       </div>
     </template>
