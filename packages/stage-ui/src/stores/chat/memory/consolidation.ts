@@ -46,6 +46,11 @@ const SYSTEM_PROMPT = [
   '- importance: 0..1, higher for facts that recur or that the user clearly cares about.',
   '- keywords: a few lowercased entities/topics for later keyword recall.',
   '',
+  'IMPORTANT: Do NOT extract facts that are already recorded in the existing memories',
+  'listed below (if any). Only extract NEW information not yet covered.',
+  'If an existing memory needs updating (e.g. a preference changed), extract the',
+  'updated version with the same keywords so the caller can reconcile.',
+  '',
   'Respond with ONLY a JSON object, no prose, no markdown fences:',
   '{"summary": string, "items": [{"content": string, "kind": "long"|"short", "importance": number, "keywords": string[]}]}',
 ].join('\n')
@@ -110,21 +115,42 @@ export interface ConsolidationParams {
 }
 
 /**
- * Builds the consolidation system prompt, appending the user's guidance when
- * present. Guidance goes AFTER the core instructions so the required output
- * format stays authoritative even if the guidance rambles.
+ * Formats existing memories as a reference block so the model can skip
+ * duplicates. Returns an empty string when there are no existing memories.
  */
-function buildSystemPrompt(guidance?: string): string {
-  const trimmed = guidance?.trim()
-  if (!trimmed)
-    return SYSTEM_PROMPT
+function formatExistingMemories(memories: Array<{ content: string, kind: string, keywords: string[] }>): string {
+  if (memories.length === 0)
+    return ''
+
+  const lines = memories.map(m =>
+    `- [${m.kind}] ${m.content} (keywords: ${m.keywords.join(', ')})`,
+  )
   return [
-    SYSTEM_PROMPT,
     '',
-    'The user also gave these preferences for what to remember and how to weigh it.',
-    'Follow them when extracting, classifying, and scoring facts — but keep the JSON output format above:',
-    trimmed,
+    'Existing memories already recorded (do NOT duplicate these):',
+    ...lines,
   ].join('\n')
+}
+
+/**
+ * Builds the consolidation system prompt with existing-memory dedup context
+ * and optional user guidance. Guidance goes AFTER the core instructions so
+ * the required output format stays authoritative even if the guidance rambles.
+ */
+function buildSystemPrompt(existingMemories: Array<{ content: string, kind: string, keywords: string[] }>, guidance?: string): string {
+  const parts = [SYSTEM_PROMPT, formatExistingMemories(existingMemories)]
+
+  const trimmed = guidance?.trim()
+  if (trimmed) {
+    parts.push(
+      '',
+      'The user also gave these preferences for what to remember and how to weigh it.',
+      'Follow them when extracting, classifying, and scoring facts — but keep the JSON output format above:',
+      trimmed,
+    )
+  }
+
+  return parts.join('\n')
 }
 
 /**
@@ -139,11 +165,13 @@ function buildSystemPrompt(guidance?: string): string {
 export async function runConsolidation(params: ConsolidationParams): Promise<ConsolidationRecord> {
   const { provider, model, characterId, sessionId, messages, roundFrom, roundTo, guidance, repository } = params
 
+  const existingMemories = await repository.listMemoryItems({ characterId })
+
   const transcript = buildTranscript(messages)
   const completion = await generateText({
     ...provider.chat(model),
     messages: [
-      { role: 'system', content: buildSystemPrompt(guidance) },
+      { role: 'system', content: buildSystemPrompt(existingMemories, guidance) },
       { role: 'user', content: transcript },
     ],
   })

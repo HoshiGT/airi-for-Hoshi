@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: 顯示
+      open_at_login: 開機時啟動
       adjust_sizes: 調整大小
       recommended_size: 建議(450x600)
       full_height: 完整高度

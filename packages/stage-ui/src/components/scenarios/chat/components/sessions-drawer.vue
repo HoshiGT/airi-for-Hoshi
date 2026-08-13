@@ -4,8 +4,9 @@ import type { ChatSessionMeta } from '../../../../types/chat-session'
 import { useResizeObserver, useScreenSafeArea } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { DrawerContent, DrawerHandle, DrawerOverlay, DrawerPortal, DrawerRoot, DrawerTitle } from 'vaul-vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { toast } from 'vue-sonner'
 
 import { useAnalytics } from '../../../../composables/use-analytics'
 import { useBreakpoints } from '../../../../composables/use-breakpoints'
@@ -31,6 +32,12 @@ const { trackChatSessionSelected, trackChatSessionStarted } = useAnalytics()
 const isCreatingSession = ref(false)
 const isPurging = ref(false)
 
+/**
+ * How long the undo affordance stays on screen after deleting a conversation.
+ * Long enough to notice and react to a misclick without parking a stale toast.
+ */
+const DELETE_UNDO_WINDOW_MS = 8000
+
 useResizeObserver(document.documentElement, () => screenSafeArea.update())
 onMounted(() => screenSafeArea.update())
 
@@ -47,6 +54,18 @@ const ownedSessions = computed(() => {
 })
 
 /**
+ * Resolved previews keyed by session id.
+ *
+ * `rows` depends on `sessionMessages`, so without this every message mutation
+ * anywhere (each streamed turn, each persist) rescans the message list of every
+ * conversation in the drawer. Only successful lookups are cached — an empty
+ * conversation must stay uncached so its first real message can still surface.
+ * Cleared whenever the drawer opens, which is also what picks up first messages
+ * that changed underneath (memory consolidation trimming the oldest rounds).
+ */
+const previewCache = new Map<string, string>()
+
+/**
  * Pull a 1-line preview from the first non-system message; falls back to the
  * stored title or a generic placeholder when nothing readable is available.
  *
@@ -60,13 +79,20 @@ function previewFor(meta: ChatSessionMeta): string {
   if (meta.title)
     return meta.title
 
+  const cached = previewCache.get(meta.sessionId)
+  if (cached !== undefined)
+    return cached
+
   const messages = sessionMessages.value[meta.sessionId] ?? []
   for (const message of messages) {
     if (message.role === 'system')
       continue
     const trimmed = extractMessageText(message).replace(/\s+/g, ' ').trim()
-    if (trimmed)
-      return trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed
+    if (trimmed) {
+      const preview = trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed
+      previewCache.set(meta.sessionId, preview)
+      return preview
+    }
   }
 
   return t('stage.chat.sessions.new-chat-fallback')
@@ -157,9 +183,60 @@ async function purgeEmpty() {
   }
 }
 
+/**
+ * Delete a conversation, but hand the user an undo before it is really gone.
+ *
+ * `deleteSession` returns everything needed to put it back, so the toast holds
+ * that payload for its lifetime. Once the toast expires the backup is dropped
+ * with it and the deletion is final (the IDB record and any cloud row are
+ * already gone at that point).
+ */
 async function deleteRow(event: Event, sessionId: string) {
   event.stopPropagation()
-  await chatSession.deleteSession(sessionId)
+  const backup = await chatSession.deleteSession(sessionId)
+  if (!backup)
+    return
+
+  toast(t('stage.chat.sessions.deleted-toast'), {
+    duration: DELETE_UNDO_WINDOW_MS,
+    action: {
+      label: t('stage.chat.sessions.undo-delete'),
+      onClick: () => {
+        void chatSession.restoreSession(backup)
+      },
+    },
+  })
+}
+
+// Inline rename state. Only one row is editable at a time, keyed by session id.
+const renamingSessionId = ref<string | null>(null)
+const renameDraft = ref('')
+const renameInputRef = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
+
+async function startRename(event: Event, row: SessionRow) {
+  event.stopPropagation()
+  renamingSessionId.value = row.meta.sessionId
+  // Seed with the stored title only. Pre-filling the auto-generated preview
+  // would silently freeze it as a real title on the first save.
+  renameDraft.value = row.meta.title ?? ''
+  await nextTick()
+  const input = Array.isArray(renameInputRef.value) ? renameInputRef.value[0] : renameInputRef.value
+  input?.focus()
+  input?.select()
+}
+
+function cancelRename() {
+  renamingSessionId.value = null
+  renameDraft.value = ''
+}
+
+async function commitRename(sessionId: string) {
+  if (renamingSessionId.value !== sessionId)
+    return
+
+  const draft = renameDraft.value
+  cancelRename()
+  await chatSession.renameSession(sessionId, draft)
 }
 
 let openGeneration = 0
@@ -167,6 +244,9 @@ let openGeneration = 0
 watch(showDialog, async (open) => {
   if (!open)
     return
+  // Reopening is the natural refresh point for previews whose source message may
+  // have been rewritten (consolidation) since the last time we looked.
+  previewCache.clear()
   openGeneration += 1
   const myGeneration = openGeneration
   void rows.value
@@ -251,40 +331,76 @@ watch(showDialog, async (open) => {
               : 'hover:bg-neutral-100/80 dark:hover:bg-neutral-800/60',
           ]"
         >
-          <button
-            :class="['w-full text-left px-2.5 py-2 outline-none flex flex-col gap-0.5']"
-            @click="selectSession(row.meta.sessionId)"
-          >
-            <div :class="['flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-200']">
-              <span :class="['truncate flex-1']">{{ row.preview }}</span>
-              <span
-                v-if="row.meta.cloudChatId"
-                :class="[
-                  'shrink-0 text-[9px] uppercase tracking-wide rounded px-1 py-px',
-                  'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
-                ]"
-                :title="t('stage.chat.sessions.cloud-badge')"
-              >
-                cloud
-              </span>
-              <span :class="['w-6']" />
-            </div>
-            <div :class="['text-[10px] text-neutral-400 dark:text-neutral-500']">
-              {{ row.updatedAtLabel }}
-            </div>
-          </button>
-          <button
+          <input
+            v-if="renamingSessionId === row.meta.sessionId"
+            ref="renameInputRef"
+            v-model="renameDraft"
+            type="text"
+            :maxlength="80"
+            :placeholder="t('stage.chat.sessions.rename-placeholder')"
             :class="[
-              'absolute right-1.5 top-1.5 h-6 w-6 flex items-center justify-center rounded-md',
-              'opacity-0 group-hover:opacity-100 focus:opacity-100',
-              'text-neutral-400 hover:text-red-500 hover:bg-red-500/10',
-              'transition-opacity duration-150',
+              'w-full rounded-lg px-2.5 py-2 text-xs',
+              'bg-white dark:bg-neutral-900',
+              'border border-primary-300 dark:border-primary-700 outline-none',
             ]"
-            :title="t('stage.chat.sessions.delete')"
-            @click="deleteRow($event, row.meta.sessionId)"
+            @click.stop
+            @keydown.enter="commitRename(row.meta.sessionId)"
+            @keydown.esc="cancelRename()"
+            @blur="commitRename(row.meta.sessionId)"
           >
-            <div class="i-solar:trash-bin-trash-bold-duotone h-3.5 w-3.5" />
-          </button>
+          <template v-else>
+            <button
+              :class="['w-full text-left px-2.5 py-2 outline-none flex flex-col gap-0.5']"
+              @click="selectSession(row.meta.sessionId)"
+              @dblclick="startRename($event, row)"
+            >
+              <div :class="['flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-200']">
+                <span :class="['truncate flex-1']">{{ row.preview }}</span>
+                <span
+                  v-if="row.meta.cloudChatId"
+                  :class="[
+                    'shrink-0 text-[9px] uppercase tracking-wide rounded px-1 py-px',
+                    'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+                  ]"
+                  :title="t('stage.chat.sessions.cloud-badge')"
+                >
+                  cloud
+                </span>
+                <span :class="['w-12']" />
+              </div>
+              <div :class="['text-[10px] text-neutral-400 dark:text-neutral-500']">
+                {{ row.updatedAtLabel }}
+              </div>
+            </button>
+            <div
+              :class="[
+                'absolute right-1.5 top-1.5 flex items-center gap-0.5',
+                'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
+                'transition-opacity duration-150',
+              ]"
+            >
+              <button
+                :class="[
+                  'h-6 w-6 flex items-center justify-center rounded-md',
+                  'text-neutral-400 hover:text-primary-500 hover:bg-primary-500/10',
+                ]"
+                :title="t('stage.chat.sessions.rename')"
+                @click="startRename($event, row)"
+              >
+                <div class="i-solar:pen-2-bold-duotone h-3.5 w-3.5" />
+              </button>
+              <button
+                :class="[
+                  'h-6 w-6 flex items-center justify-center rounded-md',
+                  'text-neutral-400 hover:text-red-500 hover:bg-red-500/10',
+                ]"
+                :title="t('stage.chat.sessions.delete')"
+                @click="deleteRow($event, row.meta.sessionId)"
+              >
+                <div class="i-solar:trash-bin-trash-bold-duotone h-3.5 w-3.5" />
+              </button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -353,37 +469,66 @@ watch(showDialog, async (open) => {
                 : 'hover:bg-neutral-100/80 dark:hover:bg-neutral-800/60',
             ]"
           >
-            <button
-              :class="['w-full text-left px-3 py-3 outline-none flex flex-col gap-1']"
-              @click="selectSession(row.meta.sessionId)"
-            >
-              <div :class="['flex items-center gap-2 text-sm font-medium text-neutral-700 dark:text-neutral-200']">
-                <span :class="['truncate flex-1']">{{ row.preview }}</span>
-                <span
-                  v-if="row.meta.cloudChatId"
-                  :class="['shrink-0 text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5', 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300']"
-                  :title="t('stage.chat.sessions.cloud-badge')"
-                >
-                  cloud
-                </span>
-                <span :class="['w-7']" />
-              </div>
-              <div :class="['text-[11px] text-neutral-500 dark:text-neutral-400']">
-                {{ row.updatedAtLabel }}
-              </div>
-            </button>
-            <button
+            <input
+              v-if="renamingSessionId === row.meta.sessionId"
+              ref="renameInputRef"
+              v-model="renameDraft"
+              type="text"
+              :maxlength="80"
+              :placeholder="t('stage.chat.sessions.rename-placeholder')"
               :class="[
-                'absolute right-2 top-2 h-7 w-7 flex items-center justify-center rounded-md',
-                'opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100',
-                'text-neutral-400 hover:text-red-500 hover:bg-red-500/10',
-                'transition-opacity duration-150',
+                'w-full rounded-xl px-3 py-3 text-sm',
+                'bg-white dark:bg-neutral-900',
+                'border border-primary-300 dark:border-primary-700 outline-none',
               ]"
-              :title="t('stage.chat.sessions.delete')"
-              @click="deleteRow($event, row.meta.sessionId)"
+              @click.stop
+              @keydown.enter="commitRename(row.meta.sessionId)"
+              @keydown.esc="cancelRename()"
+              @blur="commitRename(row.meta.sessionId)"
             >
-              <div class="i-solar:trash-bin-trash-bold-duotone h-4 w-4" />
-            </button>
+            <template v-else>
+              <button
+                :class="['w-full text-left px-3 py-3 outline-none flex flex-col gap-1']"
+                @click="selectSession(row.meta.sessionId)"
+              >
+                <div :class="['flex items-center gap-2 text-sm font-medium text-neutral-700 dark:text-neutral-200']">
+                  <span :class="['truncate flex-1']">{{ row.preview }}</span>
+                  <span
+                    v-if="row.meta.cloudChatId"
+                    :class="['shrink-0 text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5', 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300']"
+                    :title="t('stage.chat.sessions.cloud-badge')"
+                  >
+                    cloud
+                  </span>
+                  <span :class="['w-14']" />
+                </div>
+                <div :class="['text-[11px] text-neutral-500 dark:text-neutral-400']">
+                  {{ row.updatedAtLabel }}
+                </div>
+              </button>
+              <div
+                :class="[
+                  'absolute right-2 top-2 flex items-center gap-1',
+                  'opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100',
+                  'transition-opacity duration-150',
+                ]"
+              >
+                <button
+                  :class="['h-7 w-7 flex items-center justify-center rounded-md', 'text-neutral-400 hover:text-primary-500 hover:bg-primary-500/10']"
+                  :title="t('stage.chat.sessions.rename')"
+                  @click="startRename($event, row)"
+                >
+                  <div class="i-solar:pen-2-bold-duotone h-4 w-4" />
+                </button>
+                <button
+                  :class="['h-7 w-7 flex items-center justify-center rounded-md', 'text-neutral-400 hover:text-red-500 hover:bg-red-500/10']"
+                  :title="t('stage.chat.sessions.delete')"
+                  @click="deleteRow($event, row.meta.sessionId)"
+                >
+                  <div class="i-solar:trash-bin-trash-bold-duotone h-4 w-4" />
+                </button>
+              </div>
+            </template>
           </div>
         </div>
       </DrawerContent>

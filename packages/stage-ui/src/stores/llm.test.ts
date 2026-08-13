@@ -37,9 +37,18 @@ vi.mock('@xsai/shared-chat', () => ({
 vi.mock('../tools', () => ({
   mcp: mcpMock,
   createSparkCommandTool: createSparkCommandToolMock,
-  // NOTICE: the resolver imports `createWebSearchTools` from the tools barrel, so
-  // the mock must expose it or module loading fails with a missing-export error.
+  // NOTICE: the resolver imports `createWebSearchTools` and `createMemoryTools`
+  // from the tools barrel, so the mock must expose both or module loading fails
+  // with a missing-export error.
   createWebSearchTools: vi.fn(async (): Promise<Tool[]> => []),
+  createMemoryTools: vi.fn(async (): Promise<Tool[]> => []),
+}))
+
+// The memory module store reaches the providers store, whose setup calls
+// useI18n() — unavailable in this node-env suite with no app instance. Mock the
+// gate closed: these cases are about tool merge order, not memory.
+vi.mock('./modules/memory', () => ({
+  useMemoryStore: () => ({ toolsActive: false }),
 }))
 
 const provider = {

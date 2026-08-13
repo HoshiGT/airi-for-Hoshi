@@ -26,6 +26,37 @@ Environment knobs:
 - `CLAUDE_BRAIN_SESSIONS` — prompt-cache session reuse (default **on**); set `0`/`false` to force the stateless full-history flatten on every turn.
 - `CLAUDE_BRAIN_MAX_HISTORY` — cap replayed rounds on the fresh path. Unset/`0` replays the full conversation (default, so the persona keeps her whole memory); a positive integer trims to the last N user rounds to curb tokens on very long chats.
 - `CLAUDE_BRAIN_FORWARD_THINKING` — `1`/`true` to stream Claude's thinking to AIRI as `reasoning_content`, shown as a collapsible "thinking" disclosure above the reply; thinking is adaptive — casual chat gets none, hard questions get a summarized first-person trace at any effort level. Off by default because the trace may still reference system-prompt internals.
+- `CLAUDE_BRAIN_EGRESS_IPS` — exit IPs this bridge is allowed to talk to Anthropic from, comma-separated. Unset means no check. See below.
+- `CLAUDE_BRAIN_EGRESS_URL` — echo endpoint for the check (default `https://api.ipify.org`, which publishes A records only, so the answer is the IPv4 exit — the `curl -4` behaviour without socket-family control `fetch` does not expose). Any endpoint returning a bare IP works, e.g. `https://api-ipv4.ip.sb/ip`.
+- `CLAUDE_BRAIN_EGRESS_CHECK` — `0`/`false` skips the check entirely.
+
+## Exit IP check
+
+This bridge spends a **subscription**, not an API key, so the address the traffic
+appears to come from is part of the account's fingerprint. If you reach Anthropic
+through a proxy whose node can change between sessions, pin the expected exit:
+
+```bash
+# services/claude-code-brain/.env  (gitignored — an exit IP is not something to commit)
+CLAUDE_BRAIN_EGRESS_IPS=203.0.113.7
+```
+
+On start the bridge asks an echo endpoint what its exit looks like, and:
+
+- **match** → serves normally;
+- **mismatch, or the probe failed** → refuses to serve and asks for a two-step manual
+  confirmation in the terminal (transcribe the detected address, then type `yes`).
+  Failing closed on a failed probe is deliberate: an unreachable echo endpoint says
+  nothing about where traffic would exit.
+
+With no terminal attached — the desktop app or a dev script spawned it — the
+override is unavailable and the bridge simply does not start. Until the check
+clears, the port answers `503`, so a request can never slip out during the probe.
+
+**Proxy caveat:** Node's `fetch` ignores `HTTPS_PROXY`/`ALL_PROXY`, while the Claude
+CLI the Agent SDK spawns honours them. If those variables are set, the probe measured
+the *direct* route and may not reflect the SDK's exit — the log warns when it sees
+them. A transparent/TUN-mode proxy has no such split and is measured correctly.
 
 ## When not to use it
 

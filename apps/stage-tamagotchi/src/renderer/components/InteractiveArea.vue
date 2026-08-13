@@ -5,6 +5,7 @@ import type { ChatHistoryItem } from '@proj-airi/stage-ui/types/chat'
 import { errorMessageFrom } from '@moeru/std'
 import { useStopSpeakingButton } from '@proj-airi/stage-layouts/composables/useStopSpeakingButton'
 import { ChatHistory, JournalPreviewModal } from '@proj-airi/stage-ui/components'
+import { StickerPicker } from '@proj-airi/stage-ui/components/scenarios/chat'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
 import { useBackgroundStore } from '@proj-airi/stage-ui/stores/background'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
@@ -12,17 +13,23 @@ import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-sto
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
 import { useJournalPreviewStore } from '@proj-airi/stage-ui/stores/journal-preview'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
+import { formatStickerMarker, useStickersStore } from '@proj-airi/stage-ui/stores/modules/stickers'
 import { BasicTextarea } from '@proj-airi/ui'
 import { useLocalStorage } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger } from 'reka-ui'
+import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger, PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
+import CommandApprovalBlock from './chat-tool-renderers/command-approval-block.vue'
 import JournalToolCallBlock from './chat-tool-renderers/journal-tool-call-block.vue'
 
 import { useChatSyncStore } from '../stores/chat-sync'
+
+const emit = defineEmits<{
+  (e: 'sessionBranched'): void
+}>()
 
 const router = useRouter()
 const messageInput = ref('')
@@ -36,6 +43,8 @@ const chatSyncStore = useChatSyncStore()
 const backgroundStore = useBackgroundStore()
 const journalPreviewStore = useJournalPreviewStore()
 const airiCardStore = useAiriCardStore()
+const stickersStore = useStickersStore()
+const stickerPickerOpen = ref(false)
 
 const { messages } = storeToRefs(chatSession)
 const { streamingMessage } = storeToRefs(chatStream)
@@ -53,6 +62,10 @@ const sendMode = useLocalStorage<SendMode>('ui/chat/settings/send-mode', 'enter'
 const toolCallRenderers = {
   image_journal: JournalToolCallBlock,
   text_journal: JournalToolCallBlock,
+  // Every MCP call arrives under this one name, so the renderer itself decides
+  // whether the turn is a command parked for approval and otherwise falls back
+  // to the default block.
+  builtIn_mcpCallTool: CommandApprovalBlock,
 } satisfies ChatToolCallRendererRegistry
 const sendModeLabels = computed<Record<SendMode, string>>(() => ({
   'enter': t('stage.send-mode.enter'),
@@ -219,11 +232,17 @@ onMounted(() => {
 })
 
 async function handleBranchMessage(index: number) {
-  await chatSession.forkSession({
-    fromSessionId: chatSession.activeSessionId,
-    atIndex: index + 1,
-    setActive: true,
-  })
+  try {
+    await chatSession.forkSession({
+      fromSessionId: chatSession.activeSessionId,
+      atIndex: index + 1,
+      setActive: true,
+    })
+    emit('sessionBranched')
+  }
+  catch (err) {
+    console.error('[InteractiveArea] branch failed:', errorMessageFrom(err) ?? err)
+  }
 }
 
 async function handleRetryMessage(index: number) {
@@ -259,6 +278,12 @@ async function handleToolCallRerun(payload: { message: ChatHistoryItem, index: n
     toolName: payload.toolName,
     args: payload.args,
   })
+}
+
+function handleInsertSticker(name: string) {
+  stickerPickerOpen.value = false
+  const marker = formatStickerMarker(name)
+  messageInput.value = messageInput.value + marker
 }
 
 async function handleCleanupMessages() {
@@ -430,6 +455,37 @@ async function handleCleanupMessages() {
       >
         <div class="i-solar:gallery-bold-duotone" />
       </button>
+
+      <!-- Sticker Picker -->
+      <PopoverRoot v-if="stickersStore.configured" v-model:open="stickerPickerOpen">
+        <PopoverTrigger as-child>
+          <button
+            class="max-h-[10lh] min-h-[1lh]"
+            bg="neutral-100 dark:neutral-800"
+            text="lg neutral-500 dark:neutral-400"
+            hover:text="primary-500 dark:primary-400"
+            flex items-center justify-center rounded-md p-2 outline-none
+            transition-colors transition-transform active:scale-95
+            :title="t('stage.sticker-picker.title')"
+          >
+            <div class="i-solar:sticker-smile-circle-2-bold-duotone" />
+          </button>
+        </PopoverTrigger>
+        <PopoverPortal>
+          <PopoverContent
+            side="top"
+            align="end"
+            :side-offset="8"
+            :class="[
+              'z-50 w-[296px] rounded-xl shadow-lg',
+              'bg-white/95 backdrop-blur-md dark:bg-neutral-900/95',
+              'border border-neutral-200/60 dark:border-neutral-700/40',
+            ]"
+          >
+            <StickerPicker @select="handleInsertSticker" />
+          </PopoverContent>
+        </PopoverPortal>
+      </PopoverRoot>
 
       <!-- Attach Image -->
       <button

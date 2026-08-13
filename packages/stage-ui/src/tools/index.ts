@@ -1,3 +1,5 @@
 export * from './character'
+export * from './history'
 export * from './mcp'
+export * from './memory'
 export * from './web-search'

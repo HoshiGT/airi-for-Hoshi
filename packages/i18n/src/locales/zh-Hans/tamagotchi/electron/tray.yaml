@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: 显示
+      open_at_login: 开机时启动
       adjust_sizes: 调整大小...
       recommended_size: 推荐 (450x600)
       full_height: 全高

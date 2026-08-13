@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: Показать
+      open_at_login: Запускать при входе
       adjust_sizes: Отрегулировать размеры
       recommended_size: Рекомендуется (450x600)
       full_height: Полная высота

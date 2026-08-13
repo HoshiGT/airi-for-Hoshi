@@ -99,6 +99,14 @@ interface PendingRequest {
 
 const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
+/**
+ * Trailing window for snapshot broadcasts triggered by local state churn.
+ *
+ * Long enough to collapse a burst (a turn appending user + assistant messages,
+ * a persist drain) into one clone-and-post, short enough that a follower window
+ * still feels live.
+ */
+const SESSION_SNAPSHOT_BROADCAST_DEBOUNCE_MS = 150
 const REQUEST_TIMEOUT_MS = 30000
 const SPOTLIGHT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -195,6 +203,10 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   const stopSyncWatchers: Array<() => void> = []
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined
   let channel: BroadcastChannel | null = null
+  // The authority instance this follower has already received a snapshot from.
+  // Guards the heartbeat from re-requesting a full snapshot every second.
+  let syncedAuthorityId: string | null = null
+  let pendingSnapshotBroadcast: ReturnType<typeof setTimeout> | undefined
 
   function post(message: ChatSyncMessage) {
     channel?.postMessage(message)
@@ -233,6 +245,25 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     })
   }
 
+  /**
+   * Coalesce snapshot broadcasts driven by local state churn.
+   *
+   * The authority watcher is deep over every loaded session, so appending one
+   * message (or draining a persist queue) would otherwise deep-clone and
+   * structured-clone the entire chat history per mutation. Explicit requests
+   * (`request-snapshot`, `initialize`) still broadcast immediately — only
+   * reactive churn is delayed.
+   */
+  function scheduleSessionSnapshotBroadcast() {
+    if (mode.value !== 'authority' || pendingSnapshotBroadcast)
+      return
+
+    pendingSnapshotBroadcast = setTimeout(() => {
+      pendingSnapshotBroadcast = undefined
+      broadcastSessionSnapshot()
+    }, SESSION_SNAPSHOT_BROADCAST_DEBOUNCE_MS)
+  }
+
   function broadcastStreamSnapshot() {
     if (mode.value !== 'authority')
       return
@@ -261,7 +292,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function registerAuthorityWatchers() {
     stopSyncWatchers.push(
       watch([activeSessionId, sessionMessages, sessionMetas], () => {
-        broadcastSessionSnapshot()
+        scheduleSessionSnapshotBroadcast()
       }, { deep: true, immediate: true }),
       watch([sending, streamingMessage], () => {
         broadcastStreamSnapshot()
@@ -277,9 +308,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   function applySessionSnapshot(snapshot: SessionSnapshotPayload) {
     const localActiveSessionId = activeSessionId.value
+    // NOTICE:
+    // Keyed on `sessionMetas`, never `sessionMessages`. Metas cover every session
+    // in the index; messages only cover what the authority has hydrated from IDB.
+    // Switching conversations in the chat window lands on a session the main
+    // stage window may never have opened, and checking the message map there sent
+    // the follower back to the authority's session a heartbeat later.
     const shouldPreserveLocalActiveSession = mode.value === 'follower'
       && !!localActiveSessionId
-      && !!snapshot.sessionMessages[localActiveSessionId]
+      && !!snapshot.sessionMetas[localActiveSessionId]
 
     chatSession.applyRemoteSnapshot({
       ...snapshot,
@@ -526,7 +563,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     switch (message.type) {
       case 'authority-announcement':
         authorityId.value = message.authorityId
-        if (mode.value === 'follower')
+        // The announcement is a 1s liveness heartbeat. Answering each one with a
+        // snapshot request made the authority deep-clone and broadcast every
+        // loaded session once per second, and the follower replace its whole
+        // session state that often — the bulk of the chat window's jank.
+        //
+        // `syncedAuthorityId` is set when a snapshot actually lands (not here),
+        // so an unanswered request still retries on the next heartbeat instead of
+        // leaving this window permanently stale.
+        if (mode.value === 'follower' && syncedAuthorityId !== message.authorityId)
           post({ type: 'request-snapshot', requestId: createRequestId(), senderId: instanceId })
         return
       case 'request-snapshot':
@@ -537,6 +582,8 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
         if (mode.value !== 'follower')
           return
         authorityId.value = message.authorityId
+        // A snapshot answers our request, so this authority no longer needs one.
+        syncedAuthorityId = message.authorityId
         applySessionSnapshot(message.snapshot)
         return
       case 'stream-snapshot':
@@ -726,10 +773,16 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function dispose() {
     stopWatchers()
     clearHeartbeat()
+    if (pendingSnapshotBroadcast) {
+      clearTimeout(pendingSnapshotBroadcast)
+      pendingSnapshotBroadcast = undefined
+    }
     resetPendingRequests()
     detachChannel()
     mode.value = 'inactive'
     authorityId.value = null
+    // Re-initializing must pull a fresh snapshot even from the same authority.
+    syncedAuthorityId = null
   }
 
   return {

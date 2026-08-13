@@ -7,6 +7,17 @@ chat:
       airi: AIRI
       core-system: 核心系統
       you: 你
+  command-approval:
+    title: 想執行一條命令
+    cwd: 位於 {path}
+    run: 執行
+    decline: 不要執行
+    unreachable: 無法連接到審批工具
+    status:
+      pending: 等你決定
+      running: 正在提交你的決定…
+      approved: 你允許了這條命令
+      declined: 你拒絕了這條命令
   reasoning: 推理
   sessions:
     title: 對話
@@ -15,6 +26,10 @@ chat:
     cloud-badge: 已同步至雲端
     new-chat-fallback: 新對話
     delete: 刪除對話
+    rename: 重新命名對話
+    rename-placeholder: 對話名稱
+    deleted-toast: 對話已刪除
+    undo-delete: 復原
     purge-empty: 清理空對話
 message: 說點什麼...
 send-mode:

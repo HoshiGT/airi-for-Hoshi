@@ -104,7 +104,7 @@ describe('runConsolidation', () => {
     expect(record.summary).toBe('user configured the QQ bot')
     expect(record.memoryIds).toHaveLength(2)
 
-    const archives = await repository.listArchivedSummaries('s1')
+    const archives = await repository.listArchivedSummaries({ sessionId: 's1' })
     expect(archives.map(a => a.id)).toEqual([record.archiveId])
 
     const items = await repository.listMemoryItems({ sessionId: 's1' })

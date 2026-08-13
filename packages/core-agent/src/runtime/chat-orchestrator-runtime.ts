@@ -185,6 +185,13 @@ export interface ChatOrchestratorRuntimeDeps {
   getActiveProvider: () => string | undefined
   /** Returns optional prompt text appended to the provider system message for this send. */
   getSystemPromptSupplement?: () => string | undefined
+  /**
+   * When set, only the most recent N user-initiated rounds (plus the system
+   * head) are sent to the model. Older messages stay in the session for
+   * browsing and history-tool lookups but never enter the prompt, keeping token
+   * cost bounded while the cache prefix stays stable.
+   */
+  contextWindowRounds?: () => number | undefined
   /** Runtime context providers ingested immediately before prompt composition. */
   runtimeContextProviders?: Array<() => ContextMessage | null | undefined>
   /** Clock used for persisted message timestamps. @default Date.now */
@@ -325,6 +332,36 @@ export interface ChatOrchestratorRuntime {
 
 function defaultCreateId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * Keeps only the system head + the most recent `windowRounds` user-initiated
+ * rounds. Messages before the window are silently dropped from the prompt but
+ * remain in the session store for browsing and history-tool lookups.
+ */
+function truncateToContextWindow(messages: ChatHistoryItem[], windowRounds?: number): ChatHistoryItem[] {
+  if (!windowRounds || windowRounds <= 0)
+    return messages
+
+  const firstUser = messages.findIndex(m => m.role === 'user')
+  if (firstUser === -1)
+    return messages
+
+  const head = messages.slice(0, firstUser)
+  const body = messages.slice(firstUser)
+
+  // Count user messages as round boundaries (same as splitRounds).
+  const roundStarts: number[] = []
+  for (let i = 0; i < body.length; i++) {
+    if (body[i].role === 'user')
+      roundStarts.push(i)
+  }
+
+  if (roundStarts.length <= windowRounds)
+    return messages
+
+  const cutIndex = roundStarts[roundStarts.length - windowRounds]
+  return [...head, ...body.slice(cutIndex)]
 }
 
 /**
@@ -558,7 +595,10 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         turnIndex,
       })
 
-      const sessionMessagesForSend = deps.session.getSessionMessages(sessionId)
+      const sessionMessagesForSend = truncateToContextWindow(
+        deps.session.getSessionMessages(sessionId),
+        deps.contextWindowRounds?.(),
+      )
       deps.onUserTurnReady?.({
         messageText: sendingMessage,
         sessionMessages: sessionMessagesForSend,

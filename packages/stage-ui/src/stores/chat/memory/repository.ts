@@ -111,8 +111,37 @@ export class MemoryRepository {
       .orderBy(desc(memoryItems.importance), desc(memoryItems.createdAt))
   }
 
-  async listArchivedSummaries(sessionId?: string): Promise<ArchivedSummaryRow[]> {
-    const where = sessionId ? eq(archivedSummaries.sessionId, sessionId) : undefined
+  /**
+   * Highest round number any consolidation pass of this session has already
+   * summarized, or 0 when none has.
+   *
+   * Read from `archived_summaries` rather than `consolidation_runs` on purpose:
+   * runs are pruned down to the undoable few, while summaries are kept forever —
+   * and a pruned run must not make a pass re-summarize rounds it already covered.
+   */
+  async latestArchivedRound(sessionId: string): Promise<number> {
+    const rows = await this.db
+      .select({ roundTo: sql<number | null>`max(${archivedSummaries.roundTo})` })
+      .from(archivedSummaries)
+      .where(eq(archivedSummaries.sessionId, sessionId))
+    return rows[0]?.roundTo ?? 0
+  }
+
+  /**
+   * Archived consolidation summaries, newest first.
+   *
+   * Filtering by `characterId` (rather than a single session) is what lets
+   * history search reach conversations other than the open one: archives are the
+   * only place trimmed rounds still exist.
+   */
+  async listArchivedSummaries(filter?: { characterId?: string, sessionId?: string }): Promise<ArchivedSummaryRow[]> {
+    const conditions = []
+    if (filter?.characterId)
+      conditions.push(eq(archivedSummaries.characterId, filter.characterId))
+    if (filter?.sessionId)
+      conditions.push(eq(archivedSummaries.sessionId, filter.sessionId))
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined
     return this.db
       .select()
       .from(archivedSummaries)

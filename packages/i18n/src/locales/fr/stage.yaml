@@ -7,6 +7,17 @@ chat:
       airi: AIRI
       core-system: Système central
       you: Vous
+  command-approval:
+    title: Veut exécuter une commande
+    cwd: dans {path}
+    run: Exécuter
+    decline: Ne pas exécuter
+    unreachable: Impossible de joindre l'outil d'approbation
+    status:
+      pending: En attente de votre décision
+      running: Envoi de votre décision…
+      approved: Vous avez approuvé cette commande
+      declined: Vous avez refusé cette commande
   reasoning: Raisonnement
   sessions:
     title: Conversations
@@ -15,6 +26,10 @@ chat:
     cloud-badge: Synchronisé dans le cloud
     new-chat-fallback: Nouvelle conversation
     delete: Supprimer conversation
+    rename: Renommer la conversation
+    rename-placeholder: Nom de la conversation
+    deleted-toast: Conversation supprimée
+    undo-delete: Annuler
     purge-empty: Nettoyer les conversations vides
 message: Dites quelque chose...
 send-mode:

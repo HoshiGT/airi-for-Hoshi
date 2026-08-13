@@ -297,6 +297,115 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
   })
 })
 
+describe('chat-session-store · remote snapshots from another window', () => {
+  const metaFor = (sessionId: string): ChatSessionMeta => ({
+    sessionId,
+    userId: 'local',
+    characterId: 'default',
+    createdAt: 1,
+    updatedAt: 1,
+  })
+
+  // ROOT CAUSE:
+  //
+  // applyRemoteSnapshot replaced the whole message map:
+  //
+  //   sessionMessages.value = cloneDeep(snapshot.sessionMessages)
+  //
+  // The desktop authority only broadcasts sessions it has hydrated, so the chat
+  // window (a follower) lost the conversation it had just loaded every time a
+  // snapshot arrived — it then re-read IDB and re-rendered, which is what the
+  // switching jank looked like.
+  //
+  // We fixed this by merging: local-only sessions survive as long as the
+  // snapshot's metas still list them.
+  it('keeps locally-loaded messages the snapshot does not carry', () => {
+    const store = useChatSessionStore()
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-local',
+      sessionMessages: { 'sess-local': [{ role: 'user', content: 'loaded here', id: 'm1' } as any] },
+      sessionMetas: { 'sess-local': metaFor('sess-local') },
+      index: null,
+    })
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-remote',
+      sessionMessages: { 'sess-remote': [{ role: 'user', content: 'from authority', id: 'm2' } as any] },
+      // The authority knows both sessions exist; it just never loaded sess-local.
+      sessionMetas: { 'sess-local': metaFor('sess-local'), 'sess-remote': metaFor('sess-remote') },
+      index: null,
+    })
+
+    expect(store.sessionMessages['sess-local']).toEqual([{ role: 'user', content: 'loaded here', id: 'm1' }])
+    expect(store.sessionMessages['sess-remote']).toEqual([{ role: 'user', content: 'from authority', id: 'm2' }])
+  })
+
+  it('drops local messages for a session deleted in the other window', () => {
+    const store = useChatSessionStore()
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-doomed',
+      sessionMessages: { 'sess-doomed': [{ role: 'user', content: 'bye', id: 'm1' } as any] },
+      sessionMetas: { 'sess-doomed': metaFor('sess-doomed') },
+      index: null,
+    })
+
+    // The session is gone from metas: it was deleted elsewhere, so the merge
+    // must not keep it alive locally.
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-remote',
+      sessionMessages: { 'sess-remote': [] },
+      sessionMetas: { 'sess-remote': metaFor('sess-remote') },
+      index: null,
+    })
+
+    expect(store.sessionMessages['sess-doomed']).toBeUndefined()
+    expect(store.sessionMetas['sess-doomed']).toBeUndefined()
+  })
+})
+
+describe('chat-session-store · rename and delete undo', () => {
+  it('renames a session and clears the title back to the auto preview', async () => {
+    const store = useChatSessionStore()
+    await store.initialize()
+    const sessionId = store.activeSessionId
+
+    await store.renameSession(sessionId, '  记忆工具那次  ')
+    expect(store.sessionMetas[sessionId]?.title).toBe('记忆工具那次')
+
+    // A blank title means "go back to the first-message preview", not an empty row.
+    await store.renameSession(sessionId, '   ')
+    expect(store.sessionMetas[sessionId]?.title).toBeUndefined()
+  })
+
+  it('restores a deleted session from the backup delete returned', async () => {
+    const store = useChatSessionStore()
+    await store.initialize()
+
+    const keptId = store.activeSessionId
+    const doomedId = await store.createSession('default', { setActive: true, title: 'branch to delete' })
+    store.appendSessionMessage(doomedId, { role: 'user', content: 'do not lose me', id: 'm1' } as any)
+
+    const backup = await store.deleteSession(doomedId)
+    expect(backup).toBeDefined()
+    expect(store.sessionMetas[doomedId]).toBeUndefined()
+    // Deleting the active session moves focus elsewhere.
+    expect(store.activeSessionId).toBe(keptId)
+
+    await store.restoreSession(backup!)
+
+    expect(store.sessionMetas[doomedId]?.title).toBe('branch to delete')
+    // The seeded system message plus the one turn that was in it.
+    const restoredMessages = store.getSessionMessages(doomedId)
+    expect(restoredMessages).toHaveLength(2)
+    expect(restoredMessages[0]?.role).toBe('system')
+    expect(restoredMessages[1]).toMatchObject({ role: 'user', content: 'do not lose me' })
+    // It was the session on screen when deleted, so undo puts the user back.
+    expect(store.activeSessionId).toBe(doomedId)
+  })
+})
+
 describe('chat-session-store · active card prompt edits', () => {
   // ROOT CAUSE:
   //

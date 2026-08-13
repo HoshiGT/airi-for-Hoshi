@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: 표시
+      open_at_login: 로그인 시 시작
       adjust_sizes: 크기 조정
       recommended_size: 권장 (450x600)
       full_height: 전체 높이

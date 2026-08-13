@@ -7,6 +7,17 @@ chat:
       airi: AIRI
       core-system: Core система
       you: Ты
+  command-approval:
+    title: Хочет выполнить команду
+    cwd: в {path}
+    run: Выполнить
+    decline: Не выполнять
+    unreachable: Не удалось связаться с инструментом подтверждения
+    status:
+      pending: Ждём вашего решения
+      running: Отправляем ваше решение…
+      approved: Вы разрешили эту команду
+      declined: Вы отклонили эту команду
   reasoning: Причина
   sessions:
     title: Диалоги
@@ -15,6 +26,10 @@ chat:
     cloud-badge: Синхронизировано с облаком
     new-chat-fallback: Новый чат
     delete: Удалить диалог
+    rename: Переименовать чат
+    rename-placeholder: Название чата
+    deleted-toast: Чат удалён
+    undo-delete: Отменить
     purge-empty: Очистить пустые чаты
 message: Спроси что-нибудь
 send-mode:

@@ -232,8 +232,19 @@ export const useMemoryService = defineStore('memory-service', () => {
     await (await repository()).updateMemoryItem(id, fields)
   }
 
-  async function listArchives(sessionId?: string) {
-    return (await repository()).listArchivedSummaries(sessionId)
+  async function listArchives(filter?: { characterId?: string, sessionId?: string }) {
+    return (await repository()).listArchivedSummaries(filter)
+  }
+
+  /**
+   * How far this session has already been summarized, as a 1-based round number
+   * (0 = never consolidated).
+   *
+   * Callers pass this into `planConsolidation` so a pass that leaves the archived
+   * rounds in the live context does not distill them again on the next run.
+   */
+  async function consolidatedThroughRound(sessionId: string): Promise<number> {
+    return (await repository()).latestArchivedRound(sessionId)
   }
 
   async function clear(sessionId?: string) {
@@ -264,6 +275,7 @@ export const useMemoryService = defineStore('memory-service', () => {
     addMemory,
     updateMemory,
     listArchives,
+    consolidatedThroughRound,
     clear,
     exportMemory,
     importMemory,

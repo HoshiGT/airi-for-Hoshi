@@ -8,10 +8,14 @@ import type { ChatHistoryItem } from '../../../types/chat'
  * round-counting and trimming policy can be unit-tested in isolation.
  */
 export interface ConsolidationPlan {
-  /** Oldest messages to summarize + archive, then remove from live context. */
+  /**
+   * Oldest messages to summarize and archive. Whether they are also removed from
+   * the live context is the caller's decision (see `trimAfterConsolidation`);
+   * this plan only says which rounds the pass covers.
+   */
   archived: ChatHistoryItem[]
   /**
-   * Ids of the archived messages. The caller trims by id rather than by
+   * Ids of the archived messages. A trimming caller removes by id rather than by
    * slicing, so messages appended while the async consolidation runs keep
    * their place and are never dropped.
    */
@@ -29,8 +33,14 @@ export interface ConsolidationPlan {
  * user turn that produced them. Leading non-user messages (the system prompt,
  * stray context injected before the first turn) are returned as `head` and are
  * never counted as a round.
+ *
+ * Exported because round numbers are a cross-module contract, not a trimming
+ * detail: `memory_items.source_round_from` / `archived_summaries.round_from` are
+ * persisted with this numbering, and history search reports and re-reads rounds
+ * by it. Any other definition of "round" would make those references point at
+ * different messages.
  */
-function splitRounds(messages: ChatHistoryItem[]): { head: ChatHistoryItem[], rounds: ChatHistoryItem[][] } {
+export function splitRounds(messages: ChatHistoryItem[]): { head: ChatHistoryItem[], rounds: ChatHistoryItem[][] } {
   const firstUser = messages.findIndex(message => message.role === 'user')
   if (firstUser === -1)
     return { head: messages.slice(), rounds: [] }
@@ -48,32 +58,56 @@ function splitRounds(messages: ChatHistoryItem[]): { head: ChatHistoryItem[], ro
 
 /**
  * Decides whether the session is due for consolidation and, if so, which
- * oldest rounds to archive.
+ * oldest rounds to summarize.
  *
- * Returns `null` when the live round count is still below `triggerRounds` or
- * there is nothing to trim, so the caller leaves the conversation untouched.
- * Otherwise the oldest `roundCount - retainRounds` rounds are marked for
- * archival; everything newer plus the system head stays live.
+ * Returns `null` when the live round count is still below `triggerRounds`, when
+ * everything still fits the retained window, or when too few rounds have
+ * accumulated since the previous pass — in all three cases the caller leaves the
+ * conversation untouched.
  *
  * Omitting `triggerRounds` skips the high-water gate entirely — that is the
  * manual "consolidate now" path, which compresses everything older than the
  * retained window regardless of how short the conversation still is.
+ *
+ * `consolidatedThroughRound` is what makes a non-trimming pass safe to repeat:
+ * when archived rounds stay in the live list, round N is still round N next
+ * time, so a pass must start after the last round already summarized or it will
+ * distill the same conversation over and over. In trimming mode the caller
+ * leaves it at 0, because the trimmed rounds are simply gone.
+ *
+ * `minNewRounds` is the batch size gate for the same reason: without trimming,
+ * every new turn pushes one more round past the retained window, and a pass per
+ * turn would mean a model call per turn.
  */
 export function planConsolidation(
   messages: ChatHistoryItem[],
-  options: { triggerRounds?: number, retainRounds: number },
+  options: {
+    triggerRounds?: number
+    retainRounds: number
+    /** Rounds 1..N have already been summarized by an earlier pass. @default 0 */
+    consolidatedThroughRound?: number
+    /** Minimum unsummarized rounds before a pass is worth running. @default 1 */
+    minNewRounds?: number
+  },
 ): ConsolidationPlan | null {
-  const { triggerRounds, retainRounds } = options
+  const { triggerRounds, retainRounds, consolidatedThroughRound = 0, minNewRounds = 1 } = options
   const { rounds } = splitRounds(messages)
 
   if (triggerRounds !== undefined && rounds.length < triggerRounds)
     return null
 
-  const overflow = rounds.length - retainRounds
-  if (overflow <= 0)
+  // Everything up to here is old enough to summarize; the newest `retainRounds`
+  // stay untouched either way.
+  const archiveThrough = rounds.length - retainRounds
+  if (archiveThrough <= 0)
     return null
 
-  const archived = rounds.slice(0, overflow).flat()
+  const startRound = Math.max(consolidatedThroughRound, 0)
+  const newRounds = archiveThrough - startRound
+  if (newRounds < Math.max(minNewRounds, 1))
+    return null
+
+  const archived = rounds.slice(startRound, archiveThrough).flat()
   const archivedIds = new Set(
     archived.map(message => message.id).filter((id): id is string => !!id),
   )
@@ -81,7 +115,7 @@ export function planConsolidation(
   return {
     archived,
     archivedIds,
-    roundFrom: 1,
-    roundTo: overflow,
+    roundFrom: startRound + 1,
+    roundTo: archiveThrough,
   }
 }

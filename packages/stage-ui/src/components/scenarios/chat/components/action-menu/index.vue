@@ -57,14 +57,36 @@ defineSlots<{
   default: (props: { setMeasuredElement: (element: Element | ComponentPublicInstance | null) => void }) => unknown
 }>()
 
-const measuredElementRef = shallowRef<HTMLElement | null>(null)
+const measuredElement = shallowRef<HTMLElement | null>(null)
 const contextMenuContainerElementRef = useTemplateRef<HTMLElement>('contextMenuContainer')
 const topSentinelRef = useTemplateRef<HTMLDivElement>('topSentinel')
 const bottomSentinelRef = useTemplateRef<HTMLDivElement>('bottomSentinel')
 const injectedScrollContainer = inject(chatScrollContainerKey, undefined)
-const scrollTarget = computed(() => injectedScrollContainer?.value ?? null)
 const contextMenuOpen = shallowRef(false)
 const dropdownMenuOpen = shallowRef(false)
+
+// NOTICE:
+// Every message in the history mounts one of these menus, so anything wired up
+// at setup time is paid per message — a 500-message conversation was binding
+// ~1500 observers and listeners, and re-binding all of them on every session
+// switch. All of it exists purely to place the hover trigger, which cannot be
+// seen until the pointer (or a long press, or focus) reaches the message.
+//
+// Everything below therefore hangs off `interactive`: the refs handed to the
+// VueUse composables stay null until first contact, so no ResizeObserver,
+// IntersectionObserver, or scroll listener is created for a message the user has
+// not touched. The composables themselves must still be called unconditionally
+// (they own effect scopes), which is why this is gated on the input refs.
+const interactive = shallowRef(false)
+function activateInteraction() {
+  interactive.value = true
+}
+
+const measuredElementRef = computed(() => interactive.value ? measuredElement.value : null)
+const scrollTarget = computed(() => interactive.value ? (injectedScrollContainer?.value ?? null) : null)
+const observedTopSentinel = computed(() => interactive.value ? topSentinelRef.value : null)
+const observedBottomSentinel = computed(() => interactive.value ? bottomSentinelRef.value : null)
+
 const {
   innerHeight,
   innerTop,
@@ -75,12 +97,12 @@ const {
   scrollTarget: effectiveScrollTarget,
 } = useElementScroll(measuredElementRef, scrollTarget)
 
-const topSentinelVisible = useElementVisibility(topSentinelRef, {
+const topSentinelVisible = useElementVisibility(observedTopSentinel, {
   initialValue: false,
   scrollTarget: effectiveScrollTarget,
 })
 
-const bottomSentinelVisible = useElementVisibility(bottomSentinelRef, {
+const bottomSentinelVisible = useElementVisibility(observedBottomSentinel, {
   initialValue: false,
   scrollTarget: effectiveScrollTarget,
 })
@@ -149,7 +171,7 @@ function handleDropdownMenuOpenChange(open: boolean) {
 }
 
 function setMeasuredElement(element: Element | ComponentPublicInstance | null) {
-  measuredElementRef.value = element instanceof HTMLElement ? element : null
+  measuredElement.value = element instanceof HTMLElement ? element : null
 }
 
 function useTouching(element: MaybeComputedElementRef) {
@@ -158,7 +180,13 @@ function useTouching(element: MaybeComputedElementRef) {
   const pressStartTime = ref(0)
   const pressNow = ref(0)
 
-  const { resume, pause } = useIntervalFn(() => pressNow.value = Date.now(), 50)
+  // NOTICE:
+  // `immediate` defaults to true in useIntervalFn, so this used to start a 20Hz
+  // timer per message at mount and only stop on the first touchend — which never
+  // arrives on desktop. A few hundred messages meant thousands of ref writes per
+  // second, forever. The ticker exists to grow `pressedFor` during a long press,
+  // so it belongs to the press: started in handleTouchStart, stopped on end.
+  const { resume, pause } = useIntervalFn(() => pressNow.value = Date.now(), 50, { immediate: false })
 
   const isTouching = ref(false)
   const pressedFor = computed(() => {
@@ -288,28 +316,38 @@ async function handleAction(action: ChatActionMenuAction) {
 }
 
 const pressedAnimatable = reactive({ scale: 100 })
-const tl = createTimeline({ defaults: { duration: 500, autoplay: false } })
-  .add(pressedAnimatable, { scale: 90, ease: 'inOut', autoplay: false })
-  .reset()
+
+// Built on first press instead of at setup: this is the long-press squeeze, so a
+// message that is only ever read never needs an animejs timeline (one per
+// message across the whole history otherwise).
+let pressTimeline: ReturnType<typeof createTimeline> | null = null
+function getPressTimeline() {
+  pressTimeline ??= createTimeline({ defaults: { duration: 500, autoplay: false } })
+    .add(pressedAnimatable, { scale: 90, ease: 'inOut', autoplay: false })
+    .reset()
+
+  return pressTimeline
+}
 
 const { trigger: triggerTimer, clear: clearTimer } = useSetTimeoutFn(() => {
   trigger('medium')
-  tl.reset()
+  pressTimeline?.reset()
 }, { delay: 700 })
 
 watch(isTouching, (val) => {
   if (val) {
-    if (tl.completed || tl.paused) {
-      tl.restart()
+    const timeline = getPressTimeline()
+    if (timeline.completed || timeline.paused) {
+      timeline.restart()
     }
     else {
-      tl.play()
+      timeline.play()
     }
 
     triggerTimer()
   }
   else {
-    tl.reset()
+    pressTimeline?.reset()
 
     clearTimer()
   }
@@ -328,6 +366,10 @@ watch(isTouching, (val) => {
         :style="{
           transform: `scale(${pressedAnimatable.scale / 100})`,
         }"
+        @pointerenter="activateInteraction"
+        @focusin="activateInteraction"
+        @contextmenu="activateInteraction"
+        @touchstart.passive="activateInteraction"
       >
         <div
           ref="topSentinel"

@@ -4,9 +4,13 @@ import type { Tool } from '@xsai/shared-chat'
 
 import { uniqBy } from 'es-toolkit'
 
-import { createSparkCommandTool, createWebSearchTools, mcp } from '../tools'
+import { createHistoryTools, createMemoryTools, createSparkCommandTool, createWebSearchTools, mcp } from '../tools'
+import { useMemoryService } from './chat/memory'
+import { useChatSessionStore } from './chat/session-store'
 import { useLlmToolsStore } from './llm-tools'
 import { useModsServerChannelStore } from './mods/api/channel-server'
+import { useAiriCardStore } from './modules/airi-card'
+import { useMemoryStore } from './modules/memory'
 import { useWebSearchStore } from './modules/web-search'
 
 type ToolSource = Tool[] | (() => Promise<Tool[]>)
@@ -39,6 +43,23 @@ export interface ResolveLlmToolsOptions {
    * @default gated on useWebSearchStore().configured
    */
   webSearchTools?: ToolSource
+  /**
+   * Memory curation tools (`memory_save` / `memory_recall` / `memory_forget`).
+   * Supplying this also avoids reading the memory module store and opening the
+   * memory database; by default the tools are included only while the memory
+   * module is configured and in-chat memory management is enabled.
+   *
+   * @default gated on useMemoryStore().toolsActive
+   */
+  memoryTools?: ToolSource
+  /**
+   * Conversation history tools (`history_search` / `history_read`). Gated on the
+   * same flag as {@link memoryTools}: they are the transcript half of the same
+   * remembering capability, and the paired prompt explains them as a pair.
+   *
+   * @default gated on useMemoryStore().toolsActive
+   */
+  historyTools?: ToolSource
   /**
    * Request-scoped tools from {@link StreamOptions.tools}. These are ordered
    * before active runtime tools so runtime registrations can intentionally
@@ -125,6 +146,78 @@ async function resolveWebSearchTools(webSearchTools?: ToolSource): Promise<Tool[
   return createWebSearchTools({ apiKey: webSearchStore.apiKey.trim() })
 }
 
+async function resolveMemoryTools(memoryTools?: ToolSource): Promise<Tool[]> {
+  if (memoryTools != null)
+    return resolveToolSource(memoryTools)
+
+  const memoryStore = useMemoryStore()
+  // Omit the tools entirely rather than mounting no-ops: the paired toolset
+  // prompt is gated on the same flag, so an unconfigured module leaves the model
+  // with neither the tools nor any mention of them.
+  if (!memoryStore.toolsActive)
+    return []
+
+  const memoryService = useMemoryService()
+  const chatSession = useChatSessionStore()
+
+  return createMemoryTools({
+    service: memoryService,
+    getCharacterId: resolveOwningCharacterId,
+    // NOTICE: the resolver has no per-turn session context, so a memory saved
+    // during a bridged turn (a QQ DM, say) is attributed to the session the UI
+    // has open rather than the one that triggered it. Recall is scoped by
+    // character and ignores sessionId, so this only mislabels provenance; fixing
+    // it properly means threading the turn's sessionId through StreamOptions.
+    getSessionId: () => chatSession.activeSessionId,
+  })
+}
+
+/**
+ * Resolves the character id whose data the memory and history tools may touch.
+ *
+ * Mirrors how the consolidation pass resolves ownership in `chat.ts`: the
+ * session's own character wins, then the active card, then the 'default' bucket
+ * a fresh install writes into. Read per call so switching cards mid-session
+ * cannot leak one character's memories or conversations into another's.
+ */
+function resolveOwningCharacterId(): string {
+  const chatSession = useChatSessionStore()
+  const cardStore = useAiriCardStore()
+  return chatSession.sessionMetas[chatSession.activeSessionId]?.characterId || cardStore.activeCardId || 'default'
+}
+
+async function resolveHistoryTools(historyTools?: ToolSource): Promise<Tool[]> {
+  if (historyTools != null)
+    return resolveToolSource(historyTools)
+
+  const memoryStore = useMemoryStore()
+  if (!memoryStore.toolsActive)
+    return []
+
+  const memoryService = useMemoryService()
+  const chatSession = useChatSessionStore()
+
+  return createHistoryTools({
+    getCharacterId: resolveOwningCharacterId,
+    service: {
+      // `sessionMetas` is hydrated from the sessions index for every character
+      // at startup, so listing does not need to touch IndexedDB — only the
+      // sessions the search actually scans get their messages loaded.
+      listSessions: async characterId => Object.values(chatSession.sessionMetas)
+        .filter(meta => meta.characterId === characterId)
+        .map(meta => ({ sessionId: meta.sessionId, title: meta.title, updatedAt: meta.updatedAt })),
+      // Goes through `loadSession` rather than the repo directly so a scanned
+      // session lands in the store's normal loaded state (and its cloud gap fill
+      // runs once), instead of building a second, divergent copy of the history.
+      readSession: async (sessionId) => {
+        await chatSession.loadSession(sessionId)
+        return chatSession.sessionMessages[sessionId] ?? []
+      },
+      listArchives: async characterId => memoryService.listArchives({ characterId }),
+    },
+  })
+}
+
 /**
  * Resolves every tool visible to an LLM request.
  *
@@ -138,11 +231,15 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
     builtInTools,
     sparkCommandTools,
     webSearchTools,
+    memoryTools,
+    historyTools,
     customTools,
   ] = await Promise.all([
     resolveToolSource(options.builtInTools ?? mcp),
     resolveSparkCommandTools(options.sparkCommandTools),
     resolveWebSearchTools(options.webSearchTools),
+    resolveMemoryTools(options.memoryTools),
+    resolveHistoryTools(options.historyTools),
     resolveCustomTools(options.customTools),
   ])
 
@@ -151,6 +248,8 @@ export async function resolveLlmTools(options: ResolveLlmToolsOptions = {}): Pro
       ...builtInTools,
       ...sparkCommandTools,
       ...webSearchTools,
+      ...memoryTools,
+      ...historyTools,
       ...customTools,
       ...activeTools,
     ].toReversed(),

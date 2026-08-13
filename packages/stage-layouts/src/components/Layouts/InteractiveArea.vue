@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ChatHistoryItem } from '@proj-airi/stage-ui/types/chat'
 
+import { errorMessageFrom } from '@moeru/std'
 import { ChatHistory } from '@proj-airi/stage-ui/components'
 import { ChatSessionsDrawer } from '@proj-airi/stage-ui/components/scenarios/chat'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
@@ -39,11 +40,17 @@ function handleDeleteMessage(index: number) {
 }
 
 async function handleBranchMessage(index: number) {
-  await chatSession.forkSession({
-    fromSessionId: chatSession.activeSessionId,
-    atIndex: index + 1,
-    setActive: true,
-  })
+  try {
+    await chatSession.forkSession({
+      fromSessionId: chatSession.activeSessionId,
+      atIndex: index + 1,
+      setActive: true,
+    })
+    sessionsDrawerOpen.value = true
+  }
+  catch (err) {
+    console.error('[InteractiveArea] branch failed:', errorMessageFrom(err) ?? err)
+  }
 }
 </script>
 

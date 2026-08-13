@@ -9,6 +9,8 @@ import { useVisionInference } from '../../composables/vision/use-vision-inferenc
 import { useLlmToolsetPromptsStore } from '../llm-toolset-prompts'
 import { useVisionStore } from './vision'
 
+export { formatStickerMarker }
+
 /**
  * One sticker in the library. The image blob itself lives in IndexedDB
  * (localforage, keyed by {@link StickerMeta.id}); only this metadata is kept in
@@ -92,7 +94,7 @@ function buildStickerToolsetPrompt(stickers: StickerMeta[]): string {
     'Rules:',
     '- The default is NO sticker. Aim for roughly 1 in every 4-5 replies at most.',
     '- The name inside the marker must match one of the listed names EXACTLY. Never invent sticker names.',
-    '- Place the marker at the end of the sentence it reacts to.',
+    '- Place the marker right after the sentence it reacts to. It will render as a standalone sticker between message bubbles.',
   ]
   return lines.join('\n')
 }

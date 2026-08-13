@@ -69,6 +69,7 @@ const { t } = useI18n()
       <InteractiveArea
         class="interaction-area block"
         h-full w-full p-4 transition="opacity duration-250"
+        @session-branched="sessionsDrawerOpen = true"
       />
     </div>
   </div>
