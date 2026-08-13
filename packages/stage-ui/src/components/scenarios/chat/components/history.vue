@@ -126,6 +126,17 @@ const rows = computed<HistoryRow[]>(() => {
   }))
 })
 
+// NOTICE:
+// This padding MUST land on the inner list, never on the scroll container.
+//
+// `clientHeight` includes padding, and tanstack reads the scroll element's
+// `clientHeight` as the viewport height. Padding the scroll element itself made
+// it report a ~67000px viewport for a window only ~600px tall, so every offset
+// tanstack derived was wrong: the rendered window covered most of the history
+// and the scroll position no longer tracked the wheel — the list appeared to
+// freeze, then jump.
+//
+// Removal condition: none — the sizer must stay a child of the scroll element.
 const listPadding = computed(() => {
   if (!shouldVirtualize.value)
     return undefined
@@ -168,35 +179,35 @@ useChatHistoryScroll({
 <template>
   <div
     ref="chatHistoryRef"
-    flex="~ col" relative h-full w-full overflow-y-auto rounded-xl px="<sm:2" py="<sm:2"
-    :class="variant === 'mobile' ? 'gap-1' : 'gap-2'"
-    :style="listPadding"
+    :class="['relative h-full w-full overflow-y-auto rounded-xl']"
   >
-    <template v-for="row in rows" :key="row.key">
-      <div
-        :ref="measureRow"
-        :data-index="row.index"
-        :data-chat-message-index="row.index"
-        :data-chat-message-key="String(row.key)"
-        :data-chat-message-role="row.message.role"
-      >
-        <HistoryMessageRow
-          :message="row.message"
-          :index="row.index"
-          :labels="labels"
-          :sending="sending"
-          :streaming-ts="streamingTs"
-          :prev-role="renderMessages[row.index - 1]?.role ?? null"
-          :is-last="row.index === renderMessages.length - 1"
-          :variant="variant"
-          :tool-call-renderers="toolCallRenderers"
-          @copy-message="emit('copyMessage', $event)"
-          @delete-message="emit('deleteMessage', $event)"
-          @retry-message="emit('retryMessage', $event)"
-          @branch-message="emit('branchMessage', $event)"
-          @tool-call-rerun="emit('toolCallRerun', $event)"
-        />
-      </div>
-    </template>
+    <div :class="['flex flex-col', '<sm:px-2 <sm:py-2', variant === 'mobile' ? 'gap-1' : 'gap-2']" :style="listPadding">
+      <template v-for="row in rows" :key="row.key">
+        <div
+          :ref="measureRow"
+          :data-index="row.index"
+          :data-chat-message-index="row.index"
+          :data-chat-message-key="String(row.key)"
+          :data-chat-message-role="row.message.role"
+        >
+          <HistoryMessageRow
+            :message="row.message"
+            :index="row.index"
+            :labels="labels"
+            :sending="sending"
+            :streaming-ts="streamingTs"
+            :prev-role="renderMessages[row.index - 1]?.role ?? null"
+            :is-last="row.index === renderMessages.length - 1"
+            :variant="variant"
+            :tool-call-renderers="toolCallRenderers"
+            @copy-message="emit('copyMessage', $event)"
+            @delete-message="emit('deleteMessage', $event)"
+            @retry-message="emit('retryMessage', $event)"
+            @branch-message="emit('branchMessage', $event)"
+            @tool-call-rerun="emit('toolCallRerun', $event)"
+          />
+        </div>
+      </template>
+    </div>
   </div>
 </template>
