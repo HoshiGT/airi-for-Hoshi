@@ -61,7 +61,7 @@ const SYSTEM_PROMPT = [
  * Content can be a string or an array of parts; only text parts carry meaning
  * for summarization, so non-text parts (images, etc.) are dropped.
  */
-function messageText(message: Message): string {
+export function messageText(message: Message): string {
   const content = message.content
   if (typeof content === 'string')
     return content
@@ -74,7 +74,7 @@ function messageText(message: Message): string {
   return ''
 }
 
-function buildTranscript(messages: Message[]): string {
+export function buildTranscript(messages: Message[]): string {
   return messages
     .map(m => `${m.role}: ${messageText(m)}`)
     .filter(line => line.trim().length > 0)
@@ -88,7 +88,7 @@ function buildTranscript(messages: Message[]): string {
  * a stray sentence despite instructions, so we slice from the first `{` to the
  * last `}` rather than trusting the whole string to be valid JSON.
  */
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start === -1 || end === -1 || end < start)

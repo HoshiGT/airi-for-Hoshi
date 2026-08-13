@@ -728,6 +728,8 @@ pages:
         trim-desc: 'On by default: the live context is capped at the retained rounds, so older rounds are distilled into memory before leaving the conversation. Summarizing is lossy, but the archived summary and long/short memories carry the content forward; only the last two passes can be undone.'
         auto-label: Daily auto-consolidation
         auto-desc: Summarize unprocessed rounds into memory on the first conversation each day. When off, only the manual consolidation below runs.
+        layered-label: Layered auto-consolidation (L1 → L3)
+        layered-desc: 'Distill memories incrementally after each reply: L1 facts every few rounds (warm-up 1→2→4→8), L2 scene summaries once enough facts pile up, and L3 global profile from scenes. Runs only while conversations are active.'
         retain-label: Keep recent rounds
         retain-desc: How many of the most recent rounds stay in the live context verbatim.
       prompt:

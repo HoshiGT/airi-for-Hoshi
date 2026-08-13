@@ -1,4 +1,20 @@
+import type { Message } from '@xsai/shared-chat'
+
 import type { ChatHistoryItem } from '../../../types/chat'
+
+type ProviderHistoryMessage = Exclude<ChatHistoryItem, { role: 'error' }>
+
+/**
+ * Strips UI-only `error` entries so the history is valid provider input.
+ *
+ * Shared by the classic consolidation flow, the layered passes, and the
+ * manual-consolidation maintenance store — lives here (the memory trim/plan
+ * module) so the memory service can convert rounds without importing the
+ * orchestrator store (which would be circular).
+ */
+export function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
+  return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
+}
 
 /**
  * A consolidation plan derived purely from the live session message list:

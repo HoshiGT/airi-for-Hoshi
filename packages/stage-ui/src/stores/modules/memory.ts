@@ -52,6 +52,14 @@ export const useMemoryStore = defineStore('memory', () => {
   // threshold. The manual 整理 button ignores this.
   const autoConsolidationEnabled = useLocalStorageManualReset<boolean>('settings/memory/auto-consolidation-enabled', true)
 
+  // Gates layered auto-consolidation (L1 → L2 → L3): after every completed
+  // turn, the memory service checks whether the next tiered pass is due
+  // (warm-up 1→2→4→8 rounds for L1, batch thresholds for L2/L3). Idle
+  // sessions naturally stop producing passes because the check rides the turn
+  // hook — there is no timer. Independent of the daily pass, which still
+  // archives/trims whole rounds once per day.
+  const layeredConsolidationEnabled = useLocalStorageManualReset<boolean>('settings/memory/layered-consolidation-enabled', true)
+
   // ISO date string (YYYY-MM-DD) of the last daily auto-consolidation. Compared
   // against today's date to decide whether the daily pass should fire.
   const lastDailyConsolidationDate = useLocalStorageManualReset<string>('settings/memory/last-daily-consolidation-date', '')
@@ -168,6 +176,7 @@ export const useMemoryStore = defineStore('memory', () => {
     triggerRounds.reset()
     retainRounds.reset()
     autoConsolidationEnabled.reset()
+    layeredConsolidationEnabled.reset()
     lastDailyConsolidationDate.reset()
     consolidationPrompt.reset()
     trimAfterConsolidation.reset()
@@ -188,6 +197,7 @@ export const useMemoryStore = defineStore('memory', () => {
 
     triggerRounds,
     autoConsolidationEnabled,
+    layeredConsolidationEnabled,
     lastDailyConsolidationDate,
     retainRounds,
     consolidationPrompt,

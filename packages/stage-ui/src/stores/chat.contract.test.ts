@@ -207,6 +207,7 @@ vi.mock('./chat/memory', () => ({
 
 vi.mock('./chat/memory/trim', () => ({
   planConsolidation: vi.fn(() => null),
+  toProviderHistory: (messages: unknown[]) => messages.filter(message => (message as { role?: string }).role !== 'error'),
 }))
 
 // The chat orchestrator instantiates the web-search store for its side effect

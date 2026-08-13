@@ -1,10 +1,12 @@
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 import type { Message } from '@xsai/shared-chat'
 
+import type { ChatHistoryItem } from '../../../types/chat'
 import type { ConsolidationOutput } from './consolidation'
 import type { MemoryExport, MemoryKind, RankedMemory, RetrieveOptions } from './repository'
 import type { ConsolidationRunRow, MemoryItemRow, NewMemoryItem } from './schema'
 
+import { errorMessageFrom } from '@moeru/std'
 import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
 import { ref } from 'vue'
@@ -13,7 +15,10 @@ import { useMemoryStore } from '../../modules/memory'
 import { useProvidersStore } from '../../providers'
 import { runConsolidation } from './consolidation'
 import { useMemoryDb } from './db'
+import { runLayerOnePass, runLayerThreePass, runLayerTwoPass } from './layered-consolidation'
+import { initialLayerState, planLayerPass, stateAfterL1Pass } from './layers'
 import { LocalKeywordRetriever, MemoryRepository } from './repository'
+import { splitRounds, toProviderHistory } from './trim'
 
 /**
  * Normalizes user-supplied recall tags to match the consolidation model's
@@ -247,6 +252,109 @@ export const useMemoryService = defineStore('memory-service', () => {
     return (await repository()).latestArchivedRound(sessionId)
   }
 
+  // Sessions with an in-flight layered pass. Separate from the classic
+  // consolidation guard in the chat store on purpose: the chat store chains
+  // `layeredTick` behind `maybeConsolidateSession`, and this guard protects the
+  // layered path itself against re-entry from overlapping turns.
+  const layeredTicking = new Set<string>()
+
+  /**
+   * Advance the layered consolidation schedule (L1 → L2 → L3) after a turn.
+   *
+   * Hook-driven rather than timer-driven: the chat orchestrator calls this once
+   * per completed reply, so idle sessions produce no work — the "cold session
+   * stops polling" behavior falls out of having no timer at all. At most one
+   * model call runs per invocation (see {@link planLayerPass}).
+   *
+   * Non-destructive: L1 distills rounds into facts but never trims them from
+   * the live context; trimming stays with the classic daily consolidation path.
+   * Failures are swallowed so a broken model config can never disturb chat.
+   */
+  async function layeredTick(characterId: string, sessionId: string, messages: ChatHistoryItem[]): Promise<void> {
+    if (!memoryStore.configured)
+      return
+    if (!memoryStore.layeredConsolidationEnabled)
+      return
+    if (layeredTicking.has(sessionId))
+      return
+
+    layeredTicking.add(sessionId)
+    try {
+      const repo = await repository()
+      const { rounds } = splitRounds(messages)
+      const state = (await repo.getLayerState(characterId, sessionId)) ?? initialLayerState()
+
+      // Round numbering is positional; when history was trimmed since the last
+      // pass the watermark would point past the end. Re-anchor it to the current
+      // count — the trimmed rounds were already archived by the daily pass.
+      const anchoredState = rounds.length < state.l1RoundsProcessed
+        ? { ...state, l1RoundsProcessed: rounds.length }
+        : state
+
+      const counts = {
+        l1Pending: await repo.countPendingLayerItems(1, { characterId, sessionId }),
+        l2Pending: await repo.countPendingLayerItems(2, { characterId }),
+      }
+
+      const action = planLayerPass({
+        ...anchoredState,
+        roundCount: rounds.length,
+        counts,
+      })
+
+      if (action.type === 'none') {
+        // Persist only when the anchor moved, so the reset survives a reload.
+        if (anchoredState.l1RoundsProcessed !== state.l1RoundsProcessed) {
+          await repo.upsertLayerState({
+            characterId,
+            sessionId,
+            ...anchoredState,
+          })
+        }
+        return
+      }
+
+      const provider = await providersStore.getProviderInstance<ChatProvider>(memoryStore.activeProvider)
+      const model = memoryStore.resolvedModel
+
+      if (action.type === 'l1') {
+        const distilled = rounds.slice(action.roundFrom - 1, action.roundTo).flat()
+        if (distilled.length === 0)
+          return
+
+        await runLayerOnePass({
+          provider,
+          model,
+          characterId,
+          sessionId,
+          messages: toProviderHistory(distilled),
+          roundFrom: action.roundFrom,
+          roundTo: action.roundTo,
+          repository: repo,
+        })
+        await repo.upsertLayerState({
+          characterId,
+          sessionId,
+          ...stateAfterL1Pass(anchoredState, action.roundTo),
+        })
+        return
+      }
+
+      if (action.type === 'l2') {
+        await runLayerTwoPass({ provider, model, characterId, sessionId, repository: repo })
+        return
+      }
+
+      await runLayerThreePass({ provider, model, characterId, sessionId, repository: repo })
+    }
+    catch (error) {
+      console.warn('[memory] layered consolidation failed for', sessionId, errorMessageFrom(error))
+    }
+    finally {
+      layeredTicking.delete(sessionId)
+    }
+  }
+
   async function clear(sessionId?: string) {
     await (await repository()).clear(sessionId)
   }
@@ -276,6 +384,7 @@ export const useMemoryService = defineStore('memory-service', () => {
     updateMemory,
     listArchives,
     consolidatedThroughRound,
+    layeredTick,
     clear,
     exportMemory,
     importMemory,

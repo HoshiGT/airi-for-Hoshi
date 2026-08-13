@@ -37,6 +37,7 @@ const {
   providerModels,
   retainRounds,
   autoConsolidationEnabled,
+  layeredConsolidationEnabled,
   consolidationPrompt,
   toolsEnabled,
   trimAfterConsolidation,
@@ -389,6 +390,17 @@ onMounted(async () => {
         <span :class="['flex flex-col gap-0.5']">
           <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.auto-label') }}</span>
           <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.auto-desc') }}</span>
+        </span>
+      </label>
+      <label :class="['flex items-start gap-3', 'cursor-pointer select-none']">
+        <input
+          v-model="layeredConsolidationEnabled"
+          type="checkbox"
+          :class="['mt-1']"
+        >
+        <span :class="['flex flex-col gap-0.5']">
+          <span :class="['text-sm font-medium']">{{ t('settings.pages.modules.memory.cadence.layered-label') }}</span>
+          <span :class="['text-xs text-neutral-400 dark:text-neutral-500']">{{ t('settings.pages.modules.memory.cadence.layered-desc') }}</span>
         </span>
       </label>
       <div v-if="autoConsolidationEnabled && trimAfterConsolidation" :class="['flex flex-col gap-4 md:flex-row']">

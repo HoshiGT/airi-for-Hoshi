@@ -2,8 +2,6 @@ import type { ChatOrchestratorRuntimeState, ChatOrchestratorSendOptions, StreamE
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 import type { Message } from '@xsai/shared-chat'
 
-import type { ChatHistoryItem } from '../types/chat'
-
 import { errorMessageFrom } from '@moeru/std'
 import { createChatOrchestratorRuntime } from '@proj-airi/core-agent'
 import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
@@ -22,7 +20,7 @@ import { extractMessageText, isCloudSyncableMessage } from '../libs/chat-sync'
 import { createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
 import { useMemoryService } from './chat/memory'
-import { planConsolidation } from './chat/memory/trim'
+import { planConsolidation, toProviderHistory } from './chat/memory/trim'
 import { useChatSessionStore } from './chat/session-store'
 import { useChatStreamStore } from './chat/stream-store'
 import { useContextObservabilityStore } from './devtools/context-observability'
@@ -36,21 +34,15 @@ import { useMemoryDigestStore } from './modules/memory-digest'
 import { useStickersStore } from './modules/stickers'
 import { useWebSearchStore } from './modules/web-search'
 
+// Re-exported so the manual-consolidation maintenance store keeps importing
+// it from the orchestrator module it already depends on.
+export { toProviderHistory } from './chat/memory/trim'
+
 interface ForkOptions {
   fromSessionId?: string
   atIndex?: number
   reason?: string
   hidden?: boolean
-}
-
-type ProviderHistoryMessage = Exclude<ChatHistoryItem, { role: 'error' }>
-
-/**
- * Strips UI-only `error` entries so the history is valid provider input.
- * Shared with the manual memory-consolidation flow in the maintenance store.
- */
-export function toProviderHistory(messages: ChatHistoryItem[]): Message[] {
-  return messages.filter((message): message is ProviderHistoryMessage => message.role !== 'error')
 }
 
 function isTextDelta(event: StreamEvent): event is Extract<StreamEvent, { type: 'text-delta' }> {
@@ -464,7 +456,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       // Per-session memory consolidation (UI session + each QQ DM). Uses the
       // hook's sessionId, never activeSessionId, so QQ turns consolidate their
       // own session even when the UI is focused elsewhere.
-      void maybeConsolidateSession(sessionId)
+      // Layered consolidation chains behind the daily pass so the two never
+      // distill the same rounds concurrently; when the daily pass is disabled
+      // or already ran today, the chain resolves immediately and the layered
+      // tick still runs.
+      void maybeConsolidateSession(sessionId).finally(() => {
+        const characterId = chatSession.sessionMetas[sessionId]?.characterId || cardStore.activeCardId || 'default'
+        void memoryService.layeredTick(characterId, sessionId, chatSession.getSessionMessages(sessionId).map(message => toRaw(message)))
+      })
     },
     onUserTurnReady: ({ messageText, sessionMessages }) => {
       const autonomousTarget = cardStore.activeCard?.extensions?.airi?.modules?.artistry?.autonomousTarget || 'user'

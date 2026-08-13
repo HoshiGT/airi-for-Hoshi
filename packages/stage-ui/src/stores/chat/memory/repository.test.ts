@@ -297,7 +297,7 @@ describe('memoryRepository · export / import', () => {
   it('importing an empty export leaves the database untouched', async () => {
     const target = await makeRepository()
     const empty = await (await makeRepository()).exportAll()
-    expect(empty).toEqual({ memoryItems: [], archivedSummaries: [], consolidationRuns: [] })
+    expect(empty).toEqual({ memoryItems: [], archivedSummaries: [], consolidationRuns: [], layerStates: [] })
 
     await target.importAll(empty)
     expect(await target.listMemoryItems()).toEqual([])
