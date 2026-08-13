@@ -6,12 +6,18 @@ export interface LLMConfig {
   baseURL: string
   apiKey: string
   model: string
+  /** Forwarded as `reasoning_effort`; omitted from the request when undefined. */
+  reasoningEffort?: ReasoningEffort
 }
+
+/** Values @xsai/shared-chat accepts for `reasoningEffort`. Note it has no `low`. */
+export type ReasoningEffort = 'none' | 'minimal' | 'medium' | 'high' | 'xhigh'
 
 export interface LLMCallOptions {
   messages: Message[]
   responseFormat?: { type: 'json_object' }
-  reasoning?: { effort: 'low' | 'medium' | 'high' }
+  /** Overrides {@link LLMConfig.reasoningEffort} for one call. */
+  reasoningEffort?: ReasoningEffort
   abortSignal?: AbortSignal
   timeoutMs?: number
 }
@@ -69,6 +75,7 @@ export class LLMAgent {
    */
   async callLLM(options: LLMCallOptions): Promise<LLMResult> {
     const shouldSendReasoning = !this.isCerebrasBaseURL(this.config.baseURL)
+    const effort = options.reasoningEffort ?? this.config.reasoningEffort
     const { controller, dispose } = this.createLinkedAbortController(options.abortSignal)
     const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
       ? Math.floor(options.timeoutMs)
@@ -92,10 +99,17 @@ export class LLMAgent {
         headers: { 'Accept-Encoding': 'identity' },
         abortSignal: controller.signal,
         ...(options.responseFormat && { responseFormat: options.responseFormat }),
-        ...(shouldSendReasoning && {
-          // Enable reasoning with configurable effort (default: low)
-          reasoning: options.reasoning ?? { effort: 'low' },
-        }),
+        // NOTICE:
+        // The key must be `reasoningEffort`, not `reasoning`.
+        //
+        // xsai serialises whatever it is handed (`objCamelToSnake(clean(...))` in
+        // @xsai/shared `requestBody`), so the previous `reasoning: { effort: 'low' }`
+        // went out as a `reasoning` object that OpenAI-compatible providers do not
+        // recognise. Verified against DeepSeek on 2026-08-13: with that shape a
+        // capped 300-token reply spent all 300 on thinking, while
+        // `reasoning_effort: 'none'` dropped `reasoning_tokens` from the response
+        // entirely. Effort was never actually being controlled.
+        ...(shouldSendReasoning && effort && { reasoningEffort: effort }),
       } as Parameters<typeof generateText>[0])
 
       return {

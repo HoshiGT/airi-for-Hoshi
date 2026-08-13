@@ -38,6 +38,24 @@ export const configSchema = z.object({
     baseUrl: httpUrlString('OPENAI_API_BASEURL'),
     model: requiredString('OPENAI_MODEL'),
     reasoningModel: requiredString('OPENAI_REASONING_MODEL'),
+    /**
+     * Sent as `reasoning_effort`. `low` is absent on purpose — @xsai/shared-chat
+     * does not list it.
+     *
+     * NOTICE: `medium` is a deliberately conservative default, not the cheap one.
+     *
+     * Thinking is 89% of output tokens and the difference between a 2.1s turn and
+     * a 12.7s one, so `none` looks strictly better — but a 2026-08-13 session
+     * proved otherwise: turn rate went from 4.9/min to 37.3/min, and since the
+     * brain has no minimum interval between the follow-up turns it schedules for
+     * itself, the bot spammed public server chat roughly once a second. The LLM's
+     * own latency had been acting as the only rate limiter.
+     *
+     * Removal condition: once self-triggered turns are paced (and/or trivial
+     * reactions are handled by the reflex/rule layer instead of the brain), drop
+     * this to `none` — the token and latency win is real and large.
+     */
+    reasoningEffort: z.enum(['none', 'minimal', 'medium', 'high', 'xhigh']).default('medium'),
   }),
   debug: z.object({
     mcp: z.boolean().default(false),
@@ -141,6 +159,7 @@ export function initEnv(): void {
       baseUrl: env.OPENAI_API_BASEURL,
       model: env.OPENAI_MODEL,
       reasoningModel: env.OPENAI_REASONING_MODEL,
+      reasoningEffort: env.OPENAI_REASONING_EFFORT,
     },
     debug: {
       mcp: env.ENABLE_MCP_SERVER === 'true',
