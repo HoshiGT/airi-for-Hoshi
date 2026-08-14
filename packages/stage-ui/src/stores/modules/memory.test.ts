@@ -13,6 +13,7 @@ import { useMemoryStore } from './memory'
 vi.mock('../providers', () => ({
   useProvidersStore: () => ({
     getProviderMetadata: () => undefined,
+    findProviderMetadata: () => undefined,
     getModelsForProvider: () => [],
     isLoadingModels: {},
     modelLoadError: {},

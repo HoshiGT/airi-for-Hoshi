@@ -83,7 +83,7 @@ export const useMemoryStore = defineStore('memory', () => {
   const toolsEnabled = useLocalStorageManualReset<boolean>('settings/memory/tools-enabled', true)
 
   const supportsModelListing = computed(() => {
-    return providersStore.getProviderMetadata(activeProvider.value)?.capabilities.listModels !== undefined
+    return providersStore.findProviderMetadata(activeProvider.value)?.capabilities.listModels !== undefined
   })
 
   const providerModels = computed(() => {
@@ -158,13 +158,16 @@ export const useMemoryStore = defineStore('memory', () => {
   }
 
   async function loadModelsForProvider(provider: string) {
-    if (provider && providersStore.getProviderMetadata(provider)?.capabilities.listModels !== undefined) {
+    // Capability check against a possibly-stale selection (the provider may
+    // have been deleted since it was persisted), so it must not throw — the
+    // `provider &&` guard only covered the empty string, not stale ids.
+    if (providersStore.findProviderMetadata(provider)?.capabilities.listModels !== undefined) {
       await providersStore.fetchModelsForProvider(provider)
     }
   }
 
   async function getModelsForProvider(provider: string) {
-    if (provider && providersStore.getProviderMetadata(provider)?.capabilities.listModels !== undefined) {
+    if (providersStore.findProviderMetadata(provider)?.capabilities.listModels !== undefined) {
       return providersStore.getModelsForProvider(provider)
     }
 

@@ -118,3 +118,30 @@ export const useConsciousnessStore = defineStore('consciousness', () => {
     resetState,
   }
 })
+
+/**
+ * Resolves the setup error for the selected chat provider and model.
+ *
+ * Use when:
+ * - A chat entry point needs to fail before provider instantiation.
+ * - User-facing diagnostics should explain the missing Consciousness selection.
+ *
+ * Expects:
+ * - `providerId` is the current `settings/consciousness/active-provider` value.
+ * - `modelId` is the current `settings/consciousness/active-model` value.
+ *
+ * Returns:
+ * - A setup error when no provider or model is selected, otherwise `undefined`.
+ */
+export function resolveActiveConsciousnessProviderError(providerId: string, modelId: string): string | undefined {
+  if (!providerId)
+    return 'No active chat provider selected. Select a provider in Settings > Consciousness.'
+
+  // Sending depends on a model as much as on a provider: an empty model fails
+  // upstream with model_not_found, so it is the same "module not configured"
+  // class and is reported here instead of leaking the provider error.
+  if (!modelId.trim())
+    return 'No active chat model selected. Select a model in Settings > Consciousness.'
+
+  return undefined
+}

@@ -13,7 +13,7 @@ import { useChatMaintenanceStore } from '@proj-airi/stage-ui/stores/chat/mainten
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
 import { useL2dViewControl } from '@proj-airi/stage-ui/stores/live2d'
-import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { resolveActiveConsciousnessProviderError, useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { BasicTextarea, useTheme } from '@proj-airi/ui'
@@ -168,6 +168,12 @@ async function handleSend() {
   pendingImages.value = []
 
   try {
+    // Same guard as ChatArea: surface the Consciousness setup hint instead of
+    // providers.ts's raw empty-id lookup error for an unset selection.
+    const providerSetupError = resolveActiveConsciousnessProviderError(activeProvider.value, activeModel.value)
+    if (providerSetupError)
+      throw new Error(providerSetupError)
+
     const providerConfig = providersStore.getProviderConfig(activeProvider.value)
 
     await ingest(textToSend, {

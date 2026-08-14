@@ -2720,8 +2720,15 @@ export const useProvidersStore = defineStore('providers', () => {
   function getProviderMetadata(providerId: string) {
     const metadata = providerMetadata[providerId]
 
-    if (!metadata)
+    if (!metadata) {
+      // Split "nothing selected yet" (the localStorage default '') from an
+      // unknown id: the former is a user state, so its diagnostic should say
+      // what to do instead of the empty-hole "Provider metadata for  not found".
+      if (!providerId)
+        throw new Error('Provider metadata requested without a provider id. Select a provider first.')
+
       throw new Error(`Provider metadata for ${providerId} not found`)
+    }
 
     return {
       ...metadata,
@@ -2793,8 +2800,15 @@ export const useProvidersStore = defineStore('providers', () => {
       return cached
 
     const metadata = providerMetadata[providerId]
-    if (!metadata)
+    if (!metadata) {
+      // Same empty-selection vs unknown-id split as getProviderMetadata: an
+      // empty id reaching here is a missing module selection, which the user
+      // can act on, not a lookup typo.
+      if (!providerId)
+        throw new Error('Provider instance requested without a provider id. Select a provider first.')
+
       throw new Error(`Provider metadata for ${providerId} not found`)
+    }
 
     // Providers that don't require credentials use empty config
     let config = providerCredentials.value[providerId]

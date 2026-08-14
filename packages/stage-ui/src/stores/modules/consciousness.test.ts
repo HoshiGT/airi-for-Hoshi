@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useProvidersStore } from '../providers'
-import { useConsciousnessStore } from './consciousness'
+import { resolveActiveConsciousnessProviderError, useConsciousnessStore } from './consciousness'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -110,5 +110,66 @@ describe('consciousness store provider selection', () => {
     store.activeProvider = 'openai'
 
     expect(store.activeModel).toBe('gpt-4o-mini')
+  })
+})
+
+describe('resolveActiveConsciousnessProviderError', () => {
+  // ROOT CAUSE:
+  //
+  // The chat send paths passed the raw Consciousness selection straight into
+  // providersStore.getProviderInstance(). With no provider selected yet
+  // (settings/consciousness/active-provider defaults to ''), that lookup
+  // throws the internal "Provider metadata for  not found" error, and the
+  // send paths pushed that raw error onto the chat screen. An empty model is
+  // the same "module not configured" class: the request is doomed upstream.
+  //
+  // We fixed this by resolving a user-facing setup hint from the active
+  // provider and model before provider instantiation.
+  //
+  // https://github.com/moeru-ai/airi/issues/1761
+  it('returns a setup hint when no chat provider is selected', () => {
+    expect(resolveActiveConsciousnessProviderError('', '')).toBe('No active chat provider selected. Select a provider in Settings > Consciousness.')
+  })
+
+  it('reports the provider first even when a model is already set', () => {
+    expect(resolveActiveConsciousnessProviderError('', 'gpt-4o-mini')).toBe('No active chat provider selected. Select a provider in Settings > Consciousness.')
+  })
+
+  it('returns a setup hint when a provider is selected but no model is', () => {
+    expect(resolveActiveConsciousnessProviderError('openai', '')).toBe('No active chat model selected. Select a model in Settings > Consciousness.')
+  })
+
+  it('treats a whitespace-only model as missing', () => {
+    expect(resolveActiveConsciousnessProviderError('openai', '   ')).toBe('No active chat model selected. Select a model in Settings > Consciousness.')
+  })
+
+  it('allows a fully configured selection', () => {
+    expect(resolveActiveConsciousnessProviderError('openai', 'gpt-4o-mini')).toBeUndefined()
+  })
+})
+
+describe('providers store empty-id diagnostics', () => {
+  // ROOT CAUSE:
+  //
+  // getProviderMetadata/getProviderInstance interpolated the requested id
+  // into "Provider metadata for <id> not found", so an unset selection
+  // produced the empty-hole text "Provider metadata for  not found" — a
+  // message that hides the real problem (nothing selected) and cannot be
+  // acted on.
+  //
+  // We fixed this by throwing an actionable diagnostic for the empty id
+  // instead, while keeping the original text for unknown non-empty ids.
+  //
+  // https://github.com/moeru-ai/airi/issues/1761
+  it('throws an actionable error instead of the empty-hole lookup text for an empty provider id', () => {
+    const providersStore = useProvidersStore()
+
+    expect(() => providersStore.getProviderMetadata('')).toThrow('Provider metadata requested without a provider id')
+  })
+
+  it('rejects empty provider ids from getProviderInstance with an actionable error', async () => {
+    const providersStore = useProvidersStore()
+
+    await expect(providersStore.getProviderInstance('')).rejects.toThrow('Provider instance requested without a provider id')
   })
 })

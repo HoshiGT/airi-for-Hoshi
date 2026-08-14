@@ -9,7 +9,7 @@ import { useAudioAnalyzer } from '@proj-airi/stage-ui/composables'
 import { useAudioContext } from '@proj-airi/stage-ui/stores/audio'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
-import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { resolveActiveConsciousnessProviderError, useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
 import { formatStickerMarker, useStickersStore } from '@proj-airi/stage-ui/stores/modules/stickers'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
@@ -137,6 +137,13 @@ async function handleSend() {
   pendingImages.value = []
 
   try {
+    // Fail with an actionable setup hint before provider instantiation: with
+    // no provider selected, providers.ts throws the internal lookup error
+    // "Provider metadata for  not found", which used to reach the chat as-is.
+    const providerSetupError = resolveActiveConsciousnessProviderError(activeProvider.value, activeModel.value)
+    if (providerSetupError)
+      throw new Error(providerSetupError)
+
     const providerConfig = providersStore.getProviderConfig(activeProvider.value)
 
     await ingest(textToSend, {
