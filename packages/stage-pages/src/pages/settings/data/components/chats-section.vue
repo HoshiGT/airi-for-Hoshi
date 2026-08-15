@@ -3,6 +3,7 @@ import type { ChatSessionsExport } from '@proj-airi/stage-ui/types/chat-session'
 
 import type { DataSettingsStatusEmits } from '../status'
 
+import { saveFile } from '@proj-airi/stage-shared'
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { useDataMaintenance } from '@proj-airi/stage-ui/composables/use-data-maintenance'
 import { Button, DoubleCheckButton } from '@proj-airi/ui'
@@ -36,12 +37,7 @@ function triggerImportPicker() {
 async function triggerExport() {
   try {
     const blob = await exportChatSessions()
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `airi-chat-sessions-${new Date().toISOString()}.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    await saveFile(blob, `airi-chat-sessions-${new Date().toISOString()}.json`)
     trackDataAction({ action: 'chats_exported' })
     emitStatus(t('settings.pages.data.status.exported'))
   }

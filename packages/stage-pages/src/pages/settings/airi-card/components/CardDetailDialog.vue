@@ -127,7 +127,7 @@ async function handleExportCard() {
 
   isExportingCard.value = true
   try {
-    useDownload(
+    await useDownload(
       await exportAiriCardPackage({ card: selectedCard.value, displayModelsStore }),
       `${selectedCard.value.name.trim()}.zip`,
     ).download()
