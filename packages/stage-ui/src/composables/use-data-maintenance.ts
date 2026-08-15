@@ -83,6 +83,7 @@ export function useDataMaintenance() {
       cards: airiCardStore.exportCards(),
       activeCardId: airiCardStore.activeCardId,
       memory: await memoryService.exportMemory(),
+      stickers: await stickersStore.exportStickers(),
     }
     return new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   }
@@ -107,6 +108,12 @@ export function useDataMaintenance() {
 
     if (payload.memory)
       await memoryService.importMemory(payload.memory)
+
+    // Stickers are keyed by their own ids and referenced from message text by
+    // name, so they neither depend on nor affect the session/card ordering
+    // above.
+    if (payload.stickers)
+      await stickersStore.importStickers(payload.stickers)
 
     // Switch to the exporter's active card LAST, after importSessions has
     // persisted the new index and broadcast the sessions-rewritten

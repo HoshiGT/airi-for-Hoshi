@@ -416,7 +416,7 @@ pages:
     sections:
       chats:
         title: 聊天会话
-        description: 导出或导入保存的聊天会话，包含角色卡与整理出的记忆。
+        description: 导出或导入保存的聊天会话，包含角色卡、整理出的记忆与表情包。
         export: 导出聊天记录
         import: 导入聊天记录
         delete: 删除所有聊天会话

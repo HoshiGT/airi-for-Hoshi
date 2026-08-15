@@ -141,4 +141,124 @@ describe('stickers store', () => {
     expect(imageStore.size).toBe(0)
     expect(await stickersStore.getDataUrlByName(meta.name)).toBeUndefined()
   })
+
+  describe('data export', () => {
+    /** Drops every trace of the current install, the way a second device starts out. */
+    function switchToEmptyInstall() {
+      setActivePinia(createPinia())
+      imageStore.clear()
+      return useStickersStore()
+    }
+
+    async function bytesOf(blob: Blob | undefined): Promise<number[]> {
+      if (!blob)
+        return []
+      return Array.from(new Uint8Array(await blob.arrayBuffer()))
+    }
+
+    it('round-trips the library onto another install', async () => {
+      const source = useStickersStore()
+      source.enabled = true
+      const first = await source.addSticker(makeStickerFile('狂喜.png'))
+      const second = await source.addSticker(makeStickerFile('摆烂.png'))
+
+      const bundle = await source.exportStickers()
+      expect(bundle.enabled).toBe(true)
+      expect(bundle.items).toHaveLength(2)
+      expect(bundle.items[0].image).toMatch(/^data:image\/png;base64,/)
+
+      const target = switchToEmptyInstall()
+      await target.importStickers(bundle)
+
+      expect(target.stickers.map(sticker => sticker.name)).toEqual(['狂喜', '摆烂'])
+      expect(target.enabled).toBe(true)
+      expect(await bytesOf(imageStore.get(first.id))).toEqual([1, 2, 3, 4])
+      expect(await bytesOf(imageStore.get(second.id))).toEqual([1, 2, 3, 4])
+      expect(await target.getDataUrlByName('狂喜')).toMatch(/^data:image\/png;base64,/)
+    })
+
+    it('keeps the image out of the stored metadata', async () => {
+      const source = useStickersStore()
+      await source.addSticker(makeStickerFile())
+      const bundle = await source.exportStickers()
+
+      const target = switchToEmptyInstall()
+      await target.importStickers(bundle)
+
+      // The metadata list is mirrored into localStorage; a handful of inlined
+      // data URLs there would blow the quota.
+      expect(target.stickers[0]).not.toHaveProperty('image')
+    })
+
+    it('skips stickers already present so re-importing never duplicates', async () => {
+      const source = useStickersStore()
+      await source.addSticker(makeStickerFile('cat.png'))
+      const bundle = await source.exportStickers()
+
+      const target = switchToEmptyInstall()
+      await target.importStickers(bundle)
+      await target.importStickers(bundle)
+
+      expect(target.stickers).toHaveLength(1)
+      expect(target.stickers[0].name).toBe('cat')
+    })
+
+    it('renames an incoming sticker whose name is already taken', async () => {
+      const source = useStickersStore()
+      const incoming = await source.addSticker(makeStickerFile('cat.png'))
+      const bundle = await source.exportStickers()
+
+      const target = switchToEmptyInstall()
+      const existing = await target.addSticker(makeStickerFile('cat.png'))
+      await target.importStickers(bundle)
+
+      expect(target.stickers.map(sticker => sticker.name)).toEqual(['cat', 'cat-2'])
+      // Both blobs survive: the rename resolves the marker clash without
+      // dropping either image.
+      expect(imageStore.has(existing.id)).toBe(true)
+      expect(imageStore.has(incoming.id)).toBe(true)
+    })
+
+    it('drops a sticker whose image has gone missing instead of exporting a dead name', async () => {
+      const source = useStickersStore()
+      const kept = await source.addSticker(makeStickerFile('kept.png'))
+      const orphaned = await source.addSticker(makeStickerFile('orphaned.png'))
+      imageStore.delete(orphaned.id)
+
+      const bundle = await source.exportStickers()
+
+      expect(bundle.items.map(item => item.id)).toEqual([kept.id])
+    })
+
+    it('skips an unreadable image instead of aborting the whole import', async () => {
+      const source = useStickersStore()
+      await source.addSticker(makeStickerFile('good.png'))
+      const bundle = await source.exportStickers()
+      bundle.items.unshift({
+        id: 'broken-sticker',
+        name: 'broken',
+        description: '',
+        addedAt: Date.now(),
+        image: 'not-a-data-url',
+      })
+
+      const target = switchToEmptyInstall()
+      await target.importStickers(bundle)
+
+      expect(target.stickers.map(sticker => sticker.name)).toEqual(['good'])
+    })
+
+    it('never switches the feature off for the importing install', async () => {
+      const source = useStickersStore()
+      source.enabled = false
+      await source.addSticker(makeStickerFile())
+      const bundle = await source.exportStickers()
+
+      const target = switchToEmptyInstall()
+      target.enabled = true
+      await target.importStickers(bundle)
+
+      expect(target.enabled).toBe(true)
+    })
+  })
 })

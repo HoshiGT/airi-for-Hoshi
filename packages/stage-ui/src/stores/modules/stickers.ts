@@ -31,6 +31,30 @@ export interface StickerTagSuggestion {
   description: string
 }
 
+/**
+ * One sticker packaged for transfer, metadata plus the image itself.
+ *
+ * The image rides inline as a data URL because a data export is a single JSON
+ * file; a library of a few dozen stickers adds a few MB, which is the price of
+ * keeping the whole backup to one attachment the user can send over chat.
+ */
+export interface StickerExport extends StickerMeta {
+  /** `data:<mime>;base64,...` of the sticker image. */
+  image: string
+}
+
+/** The sticker library section of a data export. */
+export interface StickersExport {
+  /**
+   * Whether the exporting install had stickers switched on. Import only ever
+   * turns the feature ON: arriving with a library that was in active use should
+   * not send the user hunting for the toggle, while a library exported while
+   * disabled must not silently disable a target that has its own stickers.
+   */
+  enabled: boolean
+  items: StickerExport[]
+}
+
 // Separate localforage instance so sticker blobs never collide with
 // display-model files, which use the default instance with bare ids as keys.
 const stickerImages = localforage.createInstance({ name: 'airi-stickers' })
@@ -81,6 +105,28 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   for (let i = 0; i < bytes.length; i += chunkSize)
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
   return `data:${blob.type || 'image/png'};base64,${btoa(binary)}`
+}
+
+/**
+ * Reverse of {@link blobToDataUrl}, for images arriving from a data export.
+ * Returns `undefined` for anything that is not a base64 data URL we could have
+ * written, so one corrupt entry cannot abort a whole import.
+ */
+function dataUrlToBlob(dataUrl: string): Blob | undefined {
+  const match = /^data:([^;,]*);base64,(.+)$/s.exec(dataUrl)
+  if (!match)
+    return undefined
+
+  try {
+    const binary = atob(match[2])
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++)
+      bytes[i] = binary.charCodeAt(i)
+    return new Blob([bytes], { type: match[1] || 'image/png' })
+  }
+  catch {
+    return undefined
+  }
 }
 
 function buildStickerToolsetPrompt(stickers: StickerMeta[]): string {
@@ -260,6 +306,62 @@ export const useStickersStore = defineStore('stickers', () => {
     return blobToDataUrl(blob)
   }
 
+  /**
+   * Packages the library for a data export.
+   *
+   * Stickers whose blob has gone missing are dropped rather than exported
+   * image-less: a metadata-only entry would put a name in the model's sticker
+   * list that the importing install can never render.
+   */
+  async function exportStickers(): Promise<StickersExport> {
+    const items: StickerExport[] = []
+
+    for (const meta of stickers.value) {
+      const blob = await stickerImages.getItem<Blob>(meta.id)
+      if (!blob) {
+        console.warn('[stickers] skipping export of sticker without an image:', meta.name)
+        continue
+      }
+      items.push({ ...meta, image: await blobToDataUrl(blob) })
+    }
+
+    return { enabled: enabled.value, items }
+  }
+
+  /**
+   * Merges an exported library into this install. Stickers already present by
+   * id are skipped, so re-importing the same backup never duplicates.
+   */
+  async function importStickers(payload: StickersExport): Promise<void> {
+    for (const item of payload.items) {
+      if (stickers.value.some(sticker => sticker.id === item.id))
+        continue
+
+      const blob = dataUrlToBlob(item.image)
+      if (!blob) {
+        console.warn('[stickers] skipping import of sticker with an unreadable image:', item.name)
+        continue
+      }
+
+      await stickerImages.setItem(item.id, blob)
+
+      // The image must not follow the metadata into localStorage — a handful of
+      // inlined data URLs would blow the quota that keeps the settings snapshot
+      // small in the first place.
+      const { image: _image, ...meta } = item
+
+      // Appended one at a time so ensureUniqueName sees the stickers added
+      // earlier in this same import. Names are what the model writes inside
+      // `<|STICKER_名字|>`, so a collision would leave two stickers answering to
+      // one marker; renaming instead means markers in imported messages resolve
+      // to whichever sticker already owned that name here.
+      stickers.value = [...stickers.value, { ...meta, name: ensureUniqueName(meta.name) }]
+    }
+
+    if (payload.enabled)
+      enabled.value = true
+  }
+
   async function resetState(): Promise<void> {
     for (const url of objectUrls.values())
       URL.revokeObjectURL(url)
@@ -280,6 +382,8 @@ export const useStickersStore = defineStore('stickers', () => {
     findByName,
     getObjectUrl,
     getDataUrlByName,
+    exportStickers,
+    importStickers,
     resetState,
   }
 })

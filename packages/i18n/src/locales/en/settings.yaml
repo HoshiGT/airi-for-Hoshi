@@ -436,7 +436,7 @@ pages:
     sections:
       chats:
         title: Chat sessions
-        description: Export or import saved chat sessions, together with character cards and consolidated memories.
+        description: Export or import saved chat sessions, together with character cards, consolidated memories and the sticker library.
         export: Export chats
         import: Import chats
         delete: Delete all chat sessions

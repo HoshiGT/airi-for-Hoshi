@@ -17,7 +17,16 @@ const { statusMessage, statusTone, handleStatus } = createDataSettingsStatusStat
 const chatSync = useChatSyncStore()
 
 async function syncImportedChats(payload: ChatSessionsExport) {
-  await chatSync.requestImportSessions(payload)
+  // Only the session-shaped part crosses the wire: the authority renderer's
+  // importSessions reads nothing else, while cards, memory and stickers have
+  // already been applied here into storage both windows share. Forwarding them
+  // anyway would push the whole inlined sticker library — megabytes of base64 —
+  // through IPC for nothing.
+  await chatSync.requestImportSessions({
+    format: payload.format,
+    index: payload.index,
+    sessions: payload.sessions,
+  })
 }
 </script>
 

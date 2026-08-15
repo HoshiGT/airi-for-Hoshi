@@ -1,6 +1,7 @@
 import type { Card } from '@proj-airi/ccc'
 
 import type { MemoryExport } from '../stores/chat/memory/repository'
+import type { StickersExport } from '../stores/modules/stickers'
 import type { ChatHistoryItem } from './chat'
 
 export interface ChatSessionMeta {
@@ -66,4 +67,10 @@ export interface ChatSessionsExport {
   activeCardId?: string
   /** Consolidated memories + archived summaries + undo backups. */
   memory?: MemoryExport
+  /**
+   * The sticker library with its images inlined. Without it, `<|STICKER_名字|>`
+   * markers in the imported messages would point at images the target install
+   * does not have.
+   */
+  stickers?: StickersExport
 }
