@@ -108,8 +108,8 @@ interface HistoryRow {
 
 // One unified row list for both render modes: the whole history while small,
 // the measured window once virtualized. The padding technique below keeps the
-// rows in normal document flow (so the flex gap still applies) while the
-// container scrolls over the full estimated height.
+// rows in normal document flow while the container scrolls over the full
+// estimated height.
 const rows = computed<HistoryRow[]>(() => {
   if (!shouldVirtualize.value) {
     return renderMessages.value.map((message, index) => ({
@@ -137,6 +137,14 @@ const rows = computed<HistoryRow[]>(() => {
 // freeze, then jump.
 //
 // Removal condition: none — the sizer must stay a child of the scroll element.
+//
+// For the same reason the rows must stack contiguously: tanstack models row N's
+// offset as the sum of the measured heights of rows 0..N-1, and
+// `measureElement` only sees each row's own border box. A `gap` on this list is
+// therefore invisible to the model, and the error compounds with the index
+// (60 rows x 8px is most of a viewport), so `scrollToIndex` lands above the
+// requested message and streaming follow snaps back. Inter-row spacing lives on
+// the row wrapper as padding instead — inside what gets measured.
 const listPadding = computed(() => {
   if (!shouldVirtualize.value)
     return undefined
@@ -181,10 +189,11 @@ useChatHistoryScroll({
     ref="chatHistoryRef"
     :class="['relative h-full w-full overflow-y-auto rounded-xl']"
   >
-    <div :class="['flex flex-col', '<sm:px-2 <sm:py-2', variant === 'mobile' ? 'gap-1' : 'gap-2']" :style="listPadding">
+    <div :class="['flex flex-col', '<sm:px-2 <sm:py-2']" :style="listPadding">
       <template v-for="row in rows" :key="row.key">
         <div
           :ref="measureRow"
+          :class="[variant === 'mobile' ? 'pb-1' : 'pb-2']"
           :data-index="row.index"
           :data-chat-message-index="row.index"
           :data-chat-message-key="String(row.key)"
