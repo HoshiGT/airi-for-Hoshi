@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ActionError } from '../utils/errors'
 import { smeltItem } from './crafting'
+import { goToNearestBlock } from './movement'
 
 const mocks = vi.hoisted(() => ({
   collectBlock: vi.fn(),
@@ -107,6 +108,44 @@ describe('crafting smeltItem', () => {
       code: 'RESOURCE_MISSING',
       message: 'I do not have enough raw_beef to smelt',
     })
+    expect(mocks.collectBlock).toHaveBeenCalledWith(mineflayer, 'furnace', 1)
+  })
+
+  // ROOT CAUSE:
+  //
+  // `goToNearestBlock` was changed from "throws on failure" to "returns a SkillResult", but this
+  // call site kept ignoring the return value:
+  //
+  //   if (distanceTo(furnaceBlock.position) > 4)
+  //     await goToNearestBlock(mineflayer, 'furnace', 4, 32)
+  //
+  // An unreachable furnace therefore stopped aborting the smelt. Execution fell through to
+  // `openFurnace` on a block up to 32 blocks away, so the failure surfaced as an opaque mineflayer
+  // error rather than "I could not get there" — and a furnace placed for this smelt was left behind.
+  it('aborts the smelt when the furnace cannot be reached, and takes the placed furnace back', async () => {
+    vi.mocked(goToNearestBlock).mockResolvedValueOnce({
+      ok: false,
+      reason: 'navigationFailed',
+      message: 'Found furnace at (1, 64, 1) but could not reach it: timeout — gave up.',
+    })
+
+    const mineflayer = {
+      bot: {
+        entity: {
+          // Far enough that walking to the furnace is required.
+          position: { distanceTo: vi.fn(() => 12) },
+        },
+        inventory: { items: vi.fn(() => []) },
+        lookAt: vi.fn(),
+        openFurnace: vi.fn(),
+      },
+    } as any
+
+    await expect(smeltItem(mineflayer, 'raw_beef', 2)).rejects.toMatchObject({
+      code: 'NAVIGATION_FAILED',
+    })
+
+    expect(mineflayer.bot.openFurnace).not.toHaveBeenCalled()
     expect(mocks.collectBlock).toHaveBeenCalledWith(mineflayer, 'furnace', 1)
   })
 })

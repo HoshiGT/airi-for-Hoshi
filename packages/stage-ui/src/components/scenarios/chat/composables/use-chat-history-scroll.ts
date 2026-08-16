@@ -91,6 +91,29 @@ interface ChatHistoryScrollOptions<TMessage> {
     isFollowingTail: boolean
     isInspectingHistory: boolean
   }) => boolean
+  /**
+   * Optional overrides for virtualized histories.
+   *
+   * Virtualized lists unmount off-screen rows, so the DOM queries this
+   * composable normally uses cannot locate a message outside the rendered
+   * window. When provided, the composable asks these delegates first and only
+   * falls back to DOM lookup / container scrolling when they report the case
+   * as unhandled.
+   *
+   * Both callbacks must return `true` when they handled the scroll; `false`
+   * keeps the plain DOM behavior (useful when the same history component
+   * renders non-virtualized below a message-count threshold).
+   */
+  virtualScroll?: {
+    /**
+     * Reveals the message with this key, e.g. via `virtualizer.scrollToIndex`.
+     */
+    scrollToMessage: (key: string | number) => boolean
+    /**
+     * Scrolls the viewport to the bottom of the history.
+     */
+    scrollToBottom: () => boolean
+  }
 }
 
 /**
@@ -128,6 +151,7 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
   messages,
   getKey,
   shouldScroll,
+  virtualScroll,
 }: ChatHistoryScrollOptions<TMessage>) {
   const isFollowingTail = shallowRef(true)
   const isFollowingConversation = shallowRef(true)
@@ -229,12 +253,13 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
   }
 
   function scrollToBottom() {
-    const container = getContainer()
-    if (!container)
-      return
-
     isProgrammaticScroll.value = true
-    container.scrollTo({ top: container.scrollHeight })
+    const delegated = virtualScroll?.scrollToBottom() ?? false
+    if (!delegated) {
+      const container = getContainer()
+      if (container)
+        container.scrollTo({ top: container.scrollHeight })
+    }
     nextTick(() => {
       isProgrammaticScroll.value = false
       updateFollowingTail()
@@ -390,20 +415,27 @@ export function useChatHistoryScroll<TMessage extends { role?: string }>({
       return
 
     await nextTick()
-
-    const target = findMessageElementByKey(messageKey)
     pendingScrollKey.value = null
-    if (!target)
-      return
 
-    // Align to the top of the new message so the start of a long reply remains visible.
+    // In a virtualized container the row may be unmounted, so the delegate
+    // gets first shot. The flags below still mark the movement as programmatic
+    // so the scroll events it produces do not disengage conversation follow.
     isProgrammaticScroll.value = true
-    target.scrollIntoView({ block: 'start' })
+    const delegated = virtualScroll?.scrollToMessage(messageKey) ?? false
     nextTick(() => {
       isProgrammaticScroll.value = false
       isFollowingConversation.value = true
       updateFollowingTail()
     })
+    if (delegated)
+      return
+
+    const target = findMessageElementByKey(messageKey)
+    if (!target)
+      return
+
+    // Align to the top of the new message so the start of a long reply remains visible.
+    target.scrollIntoView({ block: 'start' })
   }, { flush: 'post' })
 
   watch(pendingStreamingFollow, async (shouldFollow) => {

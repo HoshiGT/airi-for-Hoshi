@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import DOMPurify from 'dompurify'
 
-import { onMounted, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 
 import { useMarkdown } from '../../composables/markdown'
 
@@ -30,12 +30,8 @@ async function processContent() {
   }
 }
 
-// Process content when it changes
+// Process content when it changes (immediate handles the initial mount)
 watch(() => props.content, processContent, { immediate: true })
-
-onMounted(() => {
-  processContent()
-})
 </script>
 
 <template>

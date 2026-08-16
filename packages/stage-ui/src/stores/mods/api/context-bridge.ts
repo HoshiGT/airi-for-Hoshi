@@ -24,6 +24,7 @@ import { useChatStreamStore } from '../../chat/stream-store'
 import { useContextObservabilityStore } from '../../devtools/context-observability'
 import { useLlmStreamingControlStore } from '../../llm-streaming-control'
 import { useConsciousnessStore } from '../../modules/consciousness'
+import { useStickersStore } from '../../modules/stickers'
 import { useProvidersStore } from '../../providers'
 import { useModsServerChannelStore } from './channel-server'
 
@@ -57,6 +58,7 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
   const contextObservability = useContextObservabilityStore()
   const characterOrchestratorStore = useCharacterOrchestratorStore()
   const consciousnessStore = useConsciousnessStore()
+  const stickersStore = useStickersStore()
   const providersStore = useProvidersStore()
   const { activeProvider, activeModel } = storeToRefs(consciousnessStore)
   const streamingControl = useLlmStreamingControlStore()
@@ -747,6 +749,16 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
         }),
 
         chatOrchestrator.onAssistantMessage(async (message, _messageText, context) => {
+          // Sticker slices persist only the marker name; messaging bridges
+          // (qq-bot → NapCat) cannot reach this renderer's IndexedDB, so the
+          // image bytes ride along as data URLs on the outgoing event. Names
+          // the model invented resolve to undefined and are dropped here.
+          const stickerSlices = message.slices.filter(slice => slice.type === 'sticker')
+          const stickers = (await Promise.all(stickerSlices.map(async slice => ({
+            name: slice.name,
+            dataUrl: await stickersStore.getDataUrlByName(slice.name),
+          })))).filter((sticker): sticker is { name: string, dataUrl: string } => !!sticker.dataUrl)
+
           serverChannelStore.send({
             type: 'output:gen-ai:chat:message',
             data: {
@@ -754,6 +766,7 @@ export const useContextBridgeStore = defineStore('mods:api:context-bridge', () =
               message,
               'stage-web': isStageWeb(),
               'stage-tamagotchi': isStageTamagotchi(),
+              ...(stickers.length > 0 ? { stickers } : {}),
               'gen-ai:chat': {
                 message: context.message as UserMessage,
                 composedMessage: context.composedMessage,

@@ -4,10 +4,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const configuredRef = { value: true }
+const trimAfterConsolidationRef = { value: true }
 const consolidateMock = vi.fn()
 const consolidatingRef = { value: false }
 const undoLastConsolidationMock = vi.fn()
 const undoableConsolidationCountMock = vi.fn(async () => 0)
+const consolidatedThroughRoundMock = vi.fn(async () => 0)
 
 const sessionMessages = new Map<string, ChatHistoryItem[]>()
 const setSessionMessagesMock = vi.fn((sessionId: string, messages: ChatHistoryItem[]) => {
@@ -35,6 +37,7 @@ vi.mock('./stream-store', () => ({
 vi.mock('./session-store', () => ({
   useChatSessionStore: () => ({
     activeSessionId: 'sess-1',
+    sessionMetas: { 'sess-1': { characterId: 'card-1' } },
     initialize: initializeMock,
     loadSession: loadSessionMock,
     getSessionMessages: (sessionId: string) => sessionMessages.get(sessionId) ?? [],
@@ -44,9 +47,14 @@ vi.mock('./session-store', () => ({
   }),
 }))
 
+vi.mock('../modules/airi-card', () => ({
+  useAiriCardStore: () => ({ activeCardId: 'card-1' }),
+}))
+
 vi.mock('../modules/memory', () => ({
   useMemoryStore: () => ({
     get configured() { return configuredRef.value },
+    get trimAfterConsolidation() { return trimAfterConsolidationRef.value },
     retainRounds: 2,
     triggerRounds: 30,
   }),
@@ -56,6 +64,7 @@ vi.mock('./memory', () => ({
   useMemoryService: () => ({
     get consolidating() { return consolidatingRef.value },
     consolidate: consolidateMock,
+    consolidatedThroughRound: consolidatedThroughRoundMock,
     undoLastConsolidation: undoLastConsolidationMock,
     undoableConsolidationCount: undoableConsolidationCountMock,
   }),
@@ -79,7 +88,12 @@ function seedSession(rounds: number) {
 beforeEach(() => {
   setActivePinia(createPinia())
   configuredRef.value = true
+  // The cases in this file assert the trimming contract, so they opt into it;
+  // production defaults the other way (summarize, keep the conversation) and the
+  // dedicated block at the bottom covers that.
+  trimAfterConsolidationRef.value = true
   consolidatingRef.value = false
+  consolidatedThroughRoundMock.mockReset().mockResolvedValue(0)
   sessionMessages.clear()
   consolidateMock.mockReset().mockResolvedValue({ summary: 's', items: [{}, {}, {}] })
   undoLastConsolidationMock.mockReset().mockResolvedValue(null)
@@ -128,8 +142,9 @@ describe('chat-maintenance · consolidateSessionNow', () => {
     expect(consolidateMock).toHaveBeenCalledTimes(1)
     // Rounds 1-3 (u0..a2) go to the model; the range is reported for drill-back.
     // (The options also carry archivedSessionMessages — asserted separately.)
-    expect(consolidateMock.mock.calls[0][0]).toBe('sess-1')
-    expect(consolidateMock.mock.calls[0][2]).toMatchObject({ roundFrom: 1, roundTo: 3 })
+    expect(consolidateMock.mock.calls[0][0]).toBe('card-1')
+    expect(consolidateMock.mock.calls[0][1]).toBe('sess-1')
+    expect(consolidateMock.mock.calls[0][3]).toMatchObject({ roundFrom: 1, roundTo: 3 })
 
     // Live history keeps the system head plus the retained 2 rounds.
     const trimmed = sessionMessages.get('sess-1')!
@@ -163,9 +178,62 @@ describe('chat-maintenance · consolidateSessionNow', () => {
 
     // Rounds 1-3 (u0..a2) were archived; the backup must be the session items
     // (ids included), not the provider-shaped history.
-    const options = consolidateMock.mock.calls[0][2]
+    const options = consolidateMock.mock.calls[0][3]
     expect((options.archivedSessionMessages as ChatHistoryItem[]).map(m => m.id))
       .toEqual(['u0', 'a0', 'u1', 'a1', 'u2', 'a2'])
+  })
+})
+
+describe('chat-maintenance · consolidateSessionNow without trimming (default)', () => {
+  beforeEach(() => {
+    trimAfterConsolidationRef.value = false
+  })
+
+  it('produces memories while leaving the conversation at full precision', async () => {
+    seedSession(5)
+    const store = useChatMaintenanceStore()
+    const before = [...sessionMessages.get('sess-1')!]
+
+    const result = await store.consolidateSessionNow()
+
+    expect(result).toEqual({ status: 'done', archivedRounds: 3, memoryCount: 3 })
+    expect(consolidateMock).toHaveBeenCalledTimes(1)
+    // Nothing left the conversation, so there is nothing to write back and no
+    // undo backup to record (undo just drops the memories this pass produced).
+    expect(setSessionMessagesMock).not.toHaveBeenCalled()
+    expect(sessionMessages.get('sess-1')).toEqual(before)
+    expect(consolidateMock.mock.calls[0][3]).not.toHaveProperty('archivedSessionMessages')
+    // No rewrite happened, so sibling windows have nothing to reread.
+    expect(notifySessionsRewrittenMock).not.toHaveBeenCalled()
+  })
+
+  it('resumes after the last summarized round instead of redoing the same rounds', async () => {
+    // ROOT CAUSE:
+    //
+    // Trimming used to be what stopped a pass from seeing the same rounds twice.
+    // With the conversation left intact, a second click would re-summarize rounds
+    // 1-3 and duplicate every memory they produced.
+    seedSession(8)
+    consolidatedThroughRoundMock.mockResolvedValue(3)
+
+    const store = useChatMaintenanceStore()
+    const result = await store.consolidateSessionNow()
+
+    expect(consolidatedThroughRoundMock).toHaveBeenCalledWith('sess-1')
+    // 8 rounds, retain 2 → summarizable through round 6; rounds 1-3 are done.
+    expect(consolidateMock.mock.calls[0][3]).toMatchObject({ roundFrom: 4, roundTo: 6 })
+    expect(result).toEqual({ status: 'done', archivedRounds: 3, memoryCount: 3 })
+  })
+
+  it('reports nothing-to-archive when every eligible round is already summarized', async () => {
+    seedSession(5)
+    consolidatedThroughRoundMock.mockResolvedValue(3)
+
+    const store = useChatMaintenanceStore()
+    const result = await store.consolidateSessionNow()
+
+    expect(result).toEqual({ status: 'nothing-to-archive' })
+    expect(consolidateMock).not.toHaveBeenCalled()
   })
 })
 

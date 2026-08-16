@@ -1,6 +1,10 @@
+import type { Entity } from 'prismarine-entity'
+
 import type { DamageSourceCause, DamageSourceMetadata } from '../../types/raw-events'
+import type { PerceptionContext } from '../types'
 
 import { definePerceptionEvent } from '..'
+import { isHostile } from '../../../../utils/mcdata'
 import { recentAttacker } from './attacker-tracker'
 import { classifyRecentFall } from './fall-tracker'
 
@@ -12,11 +16,95 @@ interface DamageTakenExtract {
    *  rule template never leaves a raw `{{ }}` placeholder for environmental causes).
    */
   attacker: string
+  /** How many hostile mobs are around right now — the reason this hit was escalated, when it was. */
+  nearbyHostiles: number
+  /** Which escalation gate opened. Purely informational, but useful in logs. */
+  escalation: EscalationReason
 }
+
+type EscalationReason = 'siege' | 'player' | 'heavyHit' | 'environmental'
+
+// ---------------------------------------------------------------------------------------------
+// Escalation gate.
+//
+// NOTICE: every point of damage used to wake the conscious brain — one full LLM round trip per hit.
+// Standing in fire or fighting a single zombie meant one or two rounds per second, indefinitely.
+// That is pure waste: the reflex layer already handles the ordinary cases at zero token cost
+// (`defend` fights back at hostile mobs, `escape-hazard` climbs out of lava/fire, `auto-eat` heals),
+// and `low-health.ts` separately escalates when health actually becomes critical.
+//
+// So damage only reaches the brain when reflexes plausibly cannot cope and a *decision* is needed:
+//   - a pack of mobs (fighting one at a time is losing; the brain should flee or find high ground)
+//   - a player hitting us (the defend reflex deliberately never fights players; this is social)
+//   - one very large hit (creeper, long fall — worth reacting to and commenting on)
+//   - being stuck in lava/fire/water, reported once per episode rather than once per tick
+//
+// A single zombie or a routine fall stays silent. Per D3 in docs/token-optimization-spec.md.
+// ---------------------------------------------------------------------------------------------
+
+/** Hostile mobs within SIEGE_RADIUS at or above this count means "swarmed", not "a fight". */
+const SIEGE_MOB_COUNT = 3
+const SIEGE_RADIUS = 12
+
+/** A single hit this large (out of 20 health) is an event in itself — creeper, long fall, anvil. */
+const HEAVY_HIT_DAMAGE = 6
+
+/**
+ * Once escalated, stay quiet until this much time passes with no further damage. Re-arming on a
+ * quiet gap rather than a fixed cooldown means a long fight reports once at the start, and the next
+ * separate incident reports again.
+ */
+const RE_ARM_QUIET_MS = 10_000
+
+let armed = true
+let lastDamageAt = 0
 
 let lastHealth: number | null = null
 
 let pendingDamageAmount: number | null = null
+let pendingDamageSource: DamageSourceMetadata | null = null
+let pendingHostileCount = 0
+let pendingEscalation: EscalationReason = 'heavyHit'
+
+function countNearbyHostiles(ctx: PerceptionContext): number {
+  let count = 0
+  for (const candidate of Object.values(ctx.bot.entities ?? {})) {
+    if (!candidate || ctx.isSelf(candidate))
+      continue
+    if (!isHostile(candidate as Entity))
+      continue
+
+    const distance = ctx.distanceTo(candidate)
+    if (distance === null || distance > SIEGE_RADIUS)
+      continue
+
+    count++
+  }
+  return count
+}
+
+/**
+ * Decide whether this hit warrants an LLM round trip, or whether the reflex layer has it covered.
+ */
+function classifyEscalation(
+  amount: number,
+  source: DamageSourceMetadata,
+  hostileCount: number,
+): EscalationReason | null {
+  if (source.cause === 'player')
+    return 'player'
+
+  if (amount >= HEAVY_HIT_DAMAGE)
+    return 'heavyHit'
+
+  if (source.cause === 'lava' || source.cause === 'fire' || source.cause === 'drown')
+    return 'environmental'
+
+  if (hostileCount >= SIEGE_MOB_COUNT)
+    return 'siege'
+
+  return null
+}
 
 function inferDamageSource(ctx: { bot: { entity?: any, entities?: Record<string, any> }, distanceTo: (entity: any) => number | null, maxDistance: number, isSelf: (entity: any) => boolean, entityId: (entity: any) => string }): DamageSourceMetadata {
   const entity = ctx.bot.entity as any
@@ -137,19 +225,60 @@ export const damageTakenEvent = definePerceptionEvent<[], DamageTakenExtract>({
         return false
       }
 
+      const now = Date.now()
+      if (now - lastDamageAt > RE_ARM_QUIET_MS)
+        armed = true
+      lastDamageAt = now
+
+      if (!armed) {
+        pendingDamageAmount = null
+        return false
+      }
+
+      // Compute the source here rather than in `extract` so the escalation gate can see the cause.
+      // The result is stashed for `extract`, which would otherwise redo the same entity scan.
+      const damageSource = inferDamageSource(ctx)
+      const hostileCount = countNearbyHostiles(ctx)
+      const escalation = classifyEscalation(amount, damageSource, hostileCount)
+
+      if (!escalation) {
+        pendingDamageAmount = null
+        pendingDamageSource = null
+        return false
+      }
+
+      armed = false
       pendingDamageAmount = amount
+      pendingDamageSource = damageSource
+      pendingHostileCount = hostileCount
+      pendingEscalation = escalation
       return true
     },
     extract: (ctx) => {
       const current = ctx.bot.health
       const prev = lastHealth ?? current
-      const damageSource = inferDamageSource(ctx)
+      const damageSource = pendingDamageSource ?? inferDamageSource(ctx)
       return {
         amount: pendingDamageAmount ?? Math.max(0, prev - current),
         damageSource,
         attacker: damageSource.name ?? '',
+        nearbyHostiles: pendingHostileCount,
+        escalation: pendingEscalation,
       }
     },
   },
 
 })
+
+/**
+ * Reset the escalation latch. Test-only — the module-level latch would otherwise leak between cases.
+ */
+export function __resetDamageEscalationLatchForTests(): void {
+  armed = true
+  lastDamageAt = 0
+  lastHealth = null
+  pendingDamageAmount = null
+  pendingDamageSource = null
+  pendingHostileCount = 0
+  pendingEscalation = 'heavyHit'
+}

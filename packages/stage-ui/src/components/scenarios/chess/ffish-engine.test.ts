@@ -38,8 +38,9 @@ import { uciFromFfish, uciToFfish } from './ffish-module'
 // ffish-es6's Emscripten ESM build calls `fetch()` in `instantiateAsync` even
 // under Node (Node ≥18 exposes a global `fetch`), and that fetch rejects a bare
 // filesystem path. Node's fetch does accept `data:` URLs, so we hand `locateFile`
-// a base64 data URL of the wasm bytes — staying within the typed `locateFile`
-// option instead of the untyped `wasmBinary` Emscripten field.
+// a base64 data URL of the wasm bytes. The in-app path (ffish-module.ts) takes
+// the same shape but decodes a Vite `?inline` data URI into the `wasmBinary`
+// option — see ffish-module.test.ts for that regression guard.
 const require = createRequire(import.meta.url)
 const wasmDataUrl = `data:application/wasm;base64,${readFileSync(require.resolve('ffish-es6/ffish.wasm')).toString('base64')}`
 

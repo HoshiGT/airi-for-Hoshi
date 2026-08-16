@@ -64,4 +64,48 @@ describe('generateBrainSystemPrompt', () => {
     expect(prompt).not.toContain('主人身份')
     expect(prompt).not.toContain('只听主人的指令')
   })
+
+  it('tells the model to reach for high-level tools before hand-assembling primitives', () => {
+    const prompt = generateBrainSystemPrompt(chatAction)
+
+    expect(prompt).toContain('Choosing a tool')
+    expect(prompt).toContain('goToNearestEntity')
+    expect(prompt).toContain('ensure*')
+    expect(prompt).toContain('Reading tool results')
+    expect(prompt).toContain('targetNotFound')
+  })
+
+  describe('startup summary', () => {
+    it('renders the recovered facts as advisory context, not as instructions', () => {
+      const prompt = generateBrainSystemPrompt(chatAction, {
+        startupSummary: '家在 (100, 64, -200),主人叫我小艾。',
+      })
+
+      expect(prompt).toContain('上次会话记得的事')
+      expect(prompt).toContain('家在 (100, 64, -200),主人叫我小艾。')
+      // Framed as a hint that observation overrides, since the facts may be stale.
+      expect(prompt).toContain('以观察为准')
+    })
+
+    it('is omitted entirely when there is nothing to recover', () => {
+      expect(generateBrainSystemPrompt(chatAction)).not.toContain('上次会话记得的事')
+      expect(generateBrainSystemPrompt(chatAction, { startupSummary: '   ' })).not.toContain('上次会话记得的事')
+    })
+
+    // The whole point of P0-4 is that a generated paragraph must never displace or dilute the
+    // hardcoded safety rules. They are asserted verbatim, and asserted to come last.
+    it('keeps the hardcoded safety rules verbatim and after the generated summary', () => {
+      const prompt = generateBrainSystemPrompt(chatAction, {
+        masterUsername: 'dssadg',
+        startupSummary: '上次在挖矿。',
+      })
+
+      expect(prompt).toContain('绝不攻击主人')
+      expect(prompt).toContain('只听主人的指令')
+      expect(prompt).toContain('主人 = dssadg')
+      expect(prompt).toContain('绝不要把别的玩家当成主人')
+
+      expect(prompt.indexOf('上次会话记得的事')).toBeLessThan(prompt.indexOf('主人身份'))
+    })
+  })
 })

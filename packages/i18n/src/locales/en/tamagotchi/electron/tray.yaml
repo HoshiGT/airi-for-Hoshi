@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: Show
+      open_at_login: Start at login
       adjust_sizes: Adjust sizes
       recommended_size: Recommended (450x600)
       full_height: Full Height

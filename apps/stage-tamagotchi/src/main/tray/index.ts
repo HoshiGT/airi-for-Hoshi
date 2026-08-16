@@ -1,6 +1,8 @@
 import type { LocaleDetector } from '@intlify/core'
 import type { BrowserWindow } from 'electron'
 
+import type { globalAppConfigSchema } from '../configs/global'
+import type { Config } from '../libs/electron/persistence'
 import type { I18n } from '../libs/i18n'
 import type { ServerChannel } from '../services/airi/channel-server'
 import type { setupBeatSync } from '../windows/beat-sync'
@@ -23,6 +25,7 @@ import macOSTrayIcon from '../../../resources/tray-icon-macos.png?asset'
 
 import { electronStageFadeOnHoverChanged, electronStageSetFadeOnHover } from '../../shared/eventa'
 import { onAppBeforeQuit } from '../libs/bootkit/lifecycle'
+import { applyOpenAtLogin } from '../libs/electron/login-item'
 import { setupInlayWindow } from '../windows/inlay'
 import { computeResizedBoundsAnchoredToDominantDisplay, findDominantDisplayArea } from '../windows/shared/display'
 import { toggleWindowShow } from '../windows/shared/window'
@@ -98,6 +101,7 @@ export function setupTray(params: {
   aboutWindow: () => Promise<BrowserWindow>
   serverChannel: ServerChannel
   i18n: I18n
+  appConfig: Config<typeof globalAppConfigSchema>
 }): void {
   once(() => {
     const trayImage = nativeImage.createFromPath(isMacOS ? macOSTrayIcon : icon).resize({ width: 16 })
@@ -112,6 +116,20 @@ export function setupTray(params: {
     // stage window in click-through, the window itself may not be clickable.
     const { context: stageContext } = createContext(ipcMain, params.mainWindow)
     let stageFadeOnHoverEnabled = false
+
+    // Mirrors `openAtLogin` from the persisted app config. The tray is the only
+    // surface for this today, so the local copy is just what the checkbox
+    // renders between rebuilds.
+    let openAtLoginEnabled = params.appConfig.get()?.openAtLogin ?? false
+
+    // Reconcile on boot: the OS-level entry can be removed behind our back (a
+    // system settings toggle, a reinstall that wiped ~/.config/autostart), and
+    // the persisted intent is the source of truth.
+    if (openAtLoginEnabled) {
+      void applyOpenAtLogin(true).catch((error) => {
+        console.error('[tray] failed to re-register open-at-login:', error)
+      })
+    }
 
     const rebuildContextMenu = debounce((): void => {
       if (isRendererUnavailable(params.mainWindow)) {
@@ -130,6 +148,12 @@ export function setupTray(params: {
 
       const contextMenu = Menu.buildFromTemplate([
         { label: params.i18n.t('tamagotchi.electron.tray.menu.labels.label.show'), click: () => toggleWindowShow(params.mainWindow) },
+        {
+          type: 'checkbox',
+          label: params.i18n.t('tamagotchi.electron.tray.menu.labels.label.open_at_login'),
+          checked: openAtLoginEnabled,
+          click: menuItem => void setOpenAtLogin(Boolean(menuItem.checked)),
+        },
         {
           type: 'checkbox',
           label: params.i18n.t('tamagotchi.stage.controls-island.fade-on-hover.enable'),
@@ -241,6 +265,26 @@ export function setupTray(params: {
 
       appTray.setContextMenu(contextMenu)
     }, 50)
+
+    /**
+     * Persist the intent first, then register it with the OS.
+     *
+     * Order matters: if the OS write fails (a read-only autostart directory, a
+     * locked login-item database) the user's choice is still remembered and
+     * retried on the next launch, instead of the checkbox silently flipping back.
+     */
+    async function setOpenAtLogin(enabled: boolean) {
+      openAtLoginEnabled = enabled
+      params.appConfig.update({ ...params.appConfig.get(), openAtLogin: enabled })
+      rebuildContextMenu()
+
+      try {
+        await applyOpenAtLogin(enabled)
+      }
+      catch (error) {
+        console.error('[tray] failed to register open-at-login with the OS:', error)
+      }
+    }
 
     stageContext.on(electronStageFadeOnHoverChanged, (event) => {
       const enabled = !!event?.body?.enabled

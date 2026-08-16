@@ -25,6 +25,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'retry'): void
+  (e: 'branch'): void
   (e: 'delete'): void
 }>()
 
@@ -47,8 +48,10 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
       :copy-text="copyText"
       :can-delete="!showPlaceholder"
       :can-retry="canRetry && !showPlaceholder"
+      :can-branch="!showPlaceholder"
       @copy="emit('copy')"
       @retry="emit('retry')"
+      @branch="emit('branch')"
       @delete="emit('delete')"
     >
       <template #default="{ setMeasuredElement }">

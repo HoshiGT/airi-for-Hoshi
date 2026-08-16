@@ -1,6 +1,12 @@
 name: damage-taken
 version: 1
 
+# NOTICE: the noise filtering lives in events/definitions/damage-taken.ts, not here.
+#
+# threshold/window cannot express "one zombie is fine, three is not" — they only count events. The
+# event definition applies an escalation gate (swarm / player attacker / one heavy hit / stuck in
+# lava-fire-water) plus an edge latch, so by the time a raw event reaches this rule it is already
+# worth an LLM round trip. Keeping threshold at 1 lets every escalated hit through.
 trigger:
   modality: felt
   kind: damage_taken
@@ -11,7 +17,7 @@ detector:
 
 signal:
   type: saliency_high
-  description: 'Taken damage (amount={{ amount }}, cause={{ damageSource.cause }}, from={{ attacker }}).'
+  description: 'Taken damage (amount={{ amount }}, cause={{ damageSource.cause }}, from={{ attacker }}, hostiles_nearby={{ nearbyHostiles }}, escalated_because={{ escalation }}). Routine hits are absorbed by reflexes and never reach you, so this one needs a decision. siege = you are outnumbered; retreat or find defensible ground instead of trading blows. player = a player is hitting you; decide socially before fighting back. heavyHit = one large hit (creeper, long fall, anvil). environmental = you are stuck in lava, fire or water; get out first.'
   confidence: 1.0
   metadata:
     action: damage
@@ -19,3 +25,5 @@ signal:
     cause: '{{ damageSource.cause }}'
     source_name: '{{ damageSource.name }}'
     source_distance: '{{ damageSource.distance }}'
+    nearby_hostiles: '{{ nearbyHostiles }}'
+    escalation: '{{ escalation }}'

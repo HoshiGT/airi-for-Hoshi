@@ -1,12 +1,24 @@
 chat:
   actions:
     retry: Retry
+    branch: Branch
   message:
     yesterday: Yesterday
     character-name:
       airi: AIRI
       core-system: Core System
       you: You
+  command-approval:
+    title: Wants to run a command
+    cwd: in {path}
+    run: Run it
+    decline: Don't run
+    unreachable: Could not reach the approval tool
+    status:
+      pending: Waiting for you
+      running: Sending your decision…
+      approved: You approved this command
+      declined: You declined this command
   reasoning: Reasoning
   sessions:
     title: Conversations
@@ -15,12 +27,23 @@ chat:
     cloud-badge: Synced to cloud
     new-chat-fallback: New chat
     delete: Delete conversation
+    rename: Rename conversation
+    rename-placeholder: Conversation name
+    deleted-toast: Conversation deleted
+    undo-delete: Undo
+    purge-empty: Clean up empty chats
 message: Say something...
+sticker-picker:
+  title: Stickers
+  empty: No stickers yet
 send-mode:
   title: Send key
   enter: Enter
   ctrl-enter: Ctrl + Enter
   double-enter: Double Enter
+speech-output:
+  mute: Mute voice
+  unmute: Unmute voice
 operations:
   load-models: Load Models
   load-models-status:

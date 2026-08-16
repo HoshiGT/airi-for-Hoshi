@@ -109,7 +109,7 @@ model-select:
   panel-callout:
     support-status-header: 私たちは2Dと3Dのモデル両方をサポートしています
     support-status: >
-      Click {select-button} to select or import models. Currently, {zip} (for Live2D and Spine models) and {vrm} (for VRM models) are supported.
+      Click {select-button} to select or import models. Currently, {zip} (for Live2D and Spine models), {vrm} (for VRM models), and {mmd} (for MMD models, zipped with their textures) are supported.
     model-type-example: >
       Neuro-sama uses 2D model driven by framework developed by Live2D Inc, while Grok Ani (in Grok Companion) uses 3D model driven by VRM / MMD open formats.
   select-model:
@@ -301,8 +301,10 @@ pages:
     activate: 有効化
     active: 有効
     active_badge: 現在有効
+    activation_notice: '{name} に切り替えました。現在の会話ではこのキャラクターが使用されます。'
     cancel: 操作の取消
     save: 変更を保存
+    save_and_activate: 保存して有効化
     card_not_found: カードが見つかりません
     character: キャラクター
     close: 閉じる
@@ -390,14 +392,14 @@ pages:
     systemprompt: システムプロンプト
     title: AIRIカード
     try_different_search: 別の検索ワードを試してください
-    export: エクスポート
-    exported: カードパッケージをエクスポートしました
-    export_failed: カードパッケージのエクスポートに失敗しました
-    imported: カードパッケージをインポートしました
-    import_missing_file: カードパッケージに必要なファイルがありません
-    import_invalid_file: カードパッケージファイルが正しくありません
+    export: Export
+    exported: Card package exported
+    export_failed: Failed to export card package
+    imported: Card package imported
+    import_missing_file: Card package is missing required files
+    import_invalid_file: Card package file is invalid
     upload: アップロード
-    upload_desc: AIRI カードパッケージをクリックまたはドラッグしてインポート
+    upload_desc: Click or drag an AIRI card package to import
   memory:
     description: 記憶が保存され、整理される場所
     title: 記憶
@@ -413,7 +415,7 @@ pages:
         delete: 全てのチャットセッションを削除
       models:
         title: モデル
-        description: インポートされた Live2D/VRM モデルを削除。
+        description: Remove imported Live2D, VRM, Spine, and MMD models.
         delete: すべてのモデルを削除
       modules:
         title: モジュール
@@ -437,6 +439,7 @@ pages:
       desktop:
         title: デスクトップの設定と状態をリセット
         description: AIRIデスクトップの設定と実行時の状態を消去します。
+        center: Move desktop window to center
         reset: デスクトップのデータをリセット
     confirmations:
       tooltip: 本当によろしいですか？
@@ -450,9 +453,10 @@ pages:
       modules_reset: モジュールの設定をリセットしました。
       providers_reset: プロバイダーの設定をリセットしました。
       all_deleted: すべてのローカルデータを削除しました。
+      desktop_window_centered: Desktop window moved to screen center.
       desktop_reset: デスクトップのデータをリセットしました。
   models:
-    description: Live2D、VRM、Spine、など。
+    description: Live2D, VRM, Spine, MMD, etc.
     title: モデル
     sections:
       section:
@@ -740,6 +744,15 @@ pages:
       access-token-secret-description: あなたのX / Twitterアクセストークンシークレット
       access-token-secret-placeholder: あなたのX / Twitterアクセストークンシークレットを入力
       configured: X / Twitterは適切に設定されています！
+    web-search:
+      title: Web Search
+      description: Let AIRI search the web for current information
+      enable: Enable Web Search
+      enable-description: Allow AIRI to search the web during chat
+      api-key: Tavily API Key
+      api-key-description: Web search is powered by Tavily. Get a free API key at tavily.com.
+      api-key-placeholder: Enter your Tavily API key
+      configured: Web search is ready to use!
     mcp-server:
       title: MCPサーバー
       description: Configure MCP servers and bring their tools into AIRI.
@@ -1035,6 +1048,13 @@ pages:
             part5: >-
               このプロバイダーを使用する必要がある場合は、 Serverless Function で実行される専用のプロキシバックエンド、
             part6: またはCORS制限をバイパスするためのCORSバイパスサービスが必要です。
+      claude-code:
+        description: Claude Code サブスクリプションをローカルブリッジ経由で AIRI の頭脳として使用します。
+        title: Claude Code
+        fields:
+          port:
+            label: ポート
+            description: Claude Code ブレインサービスがリッスンするポート。
       cloudflare-workers-ai:
         description: cloudflare.com
         fields:
@@ -1290,6 +1310,9 @@ pages:
       n1n:
         description: n1n.ai - 高性能なAI APIプロバイダー。
         title: n1n
+      openpaths:
+        description: openpaths.io
+        title: OpenPaths
       openrouter:
         description: openrouter.ai
         title: OpenRouter
@@ -1671,6 +1694,51 @@ spine:
   fps:
     options:
       unlimited: Unlimited
+mmd:
+  title: MMD Settings
+  scale-and-position:
+    title: Scale And Position
+    scale: Scale
+    x: X
+    'y': 'Y'
+    rotation: Rotation
+  theme-color-from-model:
+    title: Extract colors from model
+    button-extract:
+      title: Extract
+  physics:
+    title: Physics & Rig
+    enabled: Enable physics (hair, skirt, accessories)
+    ik: Enable IK (inverse kinematics)
+    grant: Enable append-bone propagation
+    gravity: Gravity strength
+  gaze:
+    title: Gaze
+    tracking: Looking at
+    options:
+      cursor: Mouse
+      camera: Camera
+      none: Disabled
+  animation:
+    title: Animation
+    idle-motion: Idle Motion
+    import-motion: Import Motion (.vmd)
+    play-once: Preview Animation
+    remove: Remove motion
+    description: >-
+      Import VMD motion files, set one as the looping idle, or play any as a one-shot gesture. Map emotions to motions to play gestures alongside facial expressions.
+  morphs:
+    title: Morphs
+    auto: (auto)
+    revert: Revert to auto
+    no-morphs: This model exposes no morphs.
+    description: >-
+      The renderer auto-detects standard Japanese morph names (あいうえお, まばたき). Override a slot here if your model uses non-standard names.
+  materials:
+    title: Materials
+    no-materials: This model exposes no materials.
+    description: >-
+      Adjust the opacity of individual model parts (face, hair, clothing, accessories). Set a part to 0 to hide it.
 websocket-secure-enabled:
   title: セキュア WebSocket (WSS) を有効にする
   description: >-

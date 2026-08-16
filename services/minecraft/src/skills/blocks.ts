@@ -1,5 +1,5 @@
 import type { Mineflayer } from '../libs/mineflayer'
-import type { BlockFace } from './base'
+import type { BlockFace, SkillResult } from './base'
 
 import pathfinderModel from 'mineflayer-pathfinder'
 
@@ -7,7 +7,7 @@ import { sleep } from '@moeru/std'
 import { Vec3 } from 'vec3'
 
 import { McData } from '../utils/mcdata'
-import { log } from './base'
+import { log, skillFail, skillOk } from './base'
 import { goToPosition } from './movement'
 import { patchedGoto } from './patched-goto'
 import { getNearestBlock } from './world'
@@ -15,47 +15,93 @@ import { getNearestBlock } from './world'
 const { goals, Movements } = pathfinderModel
 
 /**
- * Break a block at the specified position
+ * Break a block at the specified position.
+ *
+ * NOTICE: this is the single surviving implementation. A near-duplicate used to live in
+ * `skills/actions/world-interactions.ts`; that copy threw `ActionError` (which the sandbox
+ * flattens to a bare string) and lacked the cheats/creative fast paths, so it was removed and its
+ * one genuinely better trait — verifying the block is gone and retrying once — was folded in here.
  */
 export async function breakBlockAt(
   mineflayer: Mineflayer,
   x: number,
   y: number,
   z: number,
-): Promise<boolean> {
-  validatePosition(x, y, z)
+): Promise<SkillResult> {
+  if (x == null || y == null || z == null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return skillFail('invalidPosition', `Invalid position to break block at: (${x}, ${y}, ${z}).`)
+  }
 
-  const block = mineflayer.bot.blockAt(new Vec3(x, y, z))
-  if (isUnbreakableBlock(block))
-    return false
+  const pos = new Vec3(Math.floor(x), Math.floor(y), Math.floor(z))
+  const block = mineflayer.bot.blockAt(pos)
+  if (!block) {
+    return skillFail('targetNotFound', `No block found at (${pos.x}, ${pos.y}, ${pos.z}) — it may be outside loaded chunks.`, {
+      detail: { position: { x: pos.x, y: pos.y, z: pos.z } },
+    })
+  }
+
+  if (isUnbreakableBlock(block)) {
+    return skillFail('notBreakable', `Nothing to break at (${pos.x}, ${pos.y}, ${pos.z}): it is ${block.name}.`, {
+      detail: { position: { x: pos.x, y: pos.y, z: pos.z }, blockType: block.name },
+    })
+  }
 
   if (mineflayer.allowCheats) {
-    return breakWithCheats(mineflayer, x, y, z)
+    return breakWithCheats(mineflayer, pos)
   }
 
   await moveIntoRange(mineflayer, block)
 
-  if (mineflayer.isCreative) {
-    return breakInCreative(mineflayer, block, x, y, z)
-  }
+  const result = mineflayer.isCreative
+    ? await breakInCreative(mineflayer, block, pos)
+    : await breakInSurvival(mineflayer, block, pos)
 
-  return breakInSurvival(mineflayer, block, x, y, z)
+  if (!result.ok)
+    return result
+
+  return verifyBroken(mineflayer, pos, block.name)
 }
 
-function validatePosition(x: number, y: number, z: number) {
-  if (x == null || y == null || z == null) {
-    throw new Error('Invalid position to break block at.')
+/**
+ * Confirm the block actually disappeared, retrying the dig once if it did not.
+ *
+ * Servers occasionally ack a dig that never lands (lag, block-update races). Reporting success in
+ * that case makes the model plan on top of a block that is still there, which costs several turns
+ * to unwind.
+ */
+async function verifyBroken(mineflayer: Mineflayer, pos: Vec3, blockName: string): Promise<SkillResult> {
+  const after = mineflayer.bot.blockAt(pos)
+  if (!after || isUnbreakableBlock(after))
+    return skillOk(`Broke ${blockName} at (${pos.x}, ${pos.y}, ${pos.z}).`)
+
+  log(mineflayer, `${blockName} still present at ${pos} after digging, retrying once.`)
+  try {
+    await mineflayer.bot.lookAt(after.position, true)
+    await mineflayer.bot.dig(after, true)
   }
+  catch (err) {
+    return skillFail('digFailed', `Retry dig of ${blockName} at (${pos.x}, ${pos.y}, ${pos.z}) failed: ${String(err)}.`, {
+      detail: { position: { x: pos.x, y: pos.y, z: pos.z }, blockType: blockName },
+    })
+  }
+
+  const after2 = mineflayer.bot.blockAt(pos)
+  if (!after2 || isUnbreakableBlock(after2))
+    return skillOk(`Broke ${blockName} at (${pos.x}, ${pos.y}, ${pos.z}).`)
+
+  return skillFail('digFailed', `${blockName} at (${pos.x}, ${pos.y}, ${pos.z}) is still there after two dig attempts.`, {
+    detail: { position: { x: pos.x, y: pos.y, z: pos.z }, blockType: blockName },
+  })
 }
 
 function isUnbreakableBlock(block: any): boolean {
   return block.name === 'air' || block.name === 'water' || block.name === 'lava'
 }
 
-async function breakWithCheats(mineflayer: Mineflayer, x: number, y: number, z: number): Promise<boolean> {
-  mineflayer.bot.chat(`/setblock ${Math.floor(x)} ${Math.floor(y)} ${Math.floor(z)} air`)
-  log(mineflayer, `Used /setblock to break block at ${x}, ${y}, ${z}.`)
-  return true
+async function breakWithCheats(mineflayer: Mineflayer, pos: Vec3): Promise<SkillResult> {
+  mineflayer.bot.chat(`/setblock ${pos.x} ${pos.y} ${pos.z} air`)
+  log(mineflayer, `Used /setblock to break block at ${pos.x}, ${pos.y}, ${pos.z}.`)
+  return skillOk(`Used /setblock to break the block at (${pos.x}, ${pos.y}, ${pos.z}).`)
 }
 
 async function moveIntoRange(mineflayer: Mineflayer, block: any) {
@@ -69,28 +115,51 @@ async function moveIntoRange(mineflayer: Mineflayer, block: any) {
   }
 }
 
-async function breakInCreative(mineflayer: Mineflayer, block: any, x: number, y: number, z: number): Promise<boolean> {
-  await mineflayer.bot.dig(block, true)
-  log(mineflayer, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`)
-  return true
+async function breakInCreative(mineflayer: Mineflayer, block: any, pos: Vec3): Promise<SkillResult> {
+  try {
+    await mineflayer.bot.dig(block, true)
+  }
+  catch (err) {
+    return skillFail('digFailed', `Failed to dig ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}): ${String(err)}.`, {
+      detail: { position: { x: pos.x, y: pos.y, z: pos.z }, blockType: block.name },
+    })
+  }
+  log(mineflayer, `Broke ${block.name} at x:${pos.x}, y:${pos.y}, z:${pos.z}.`)
+  return skillOk(`Broke ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}).`)
 }
 
-async function breakInSurvival(mineflayer: Mineflayer, block: any, x: number, y: number, z: number): Promise<boolean> {
+async function breakInSurvival(mineflayer: Mineflayer, block: any, pos: Vec3): Promise<SkillResult> {
   await mineflayer.bot.tool.equipForBlock(block)
 
   const itemId = mineflayer.bot.heldItem?.type
   if (!block.canHarvest(itemId)) {
     log(mineflayer, `Don't have right tools to break ${block.name}.`)
-    return false
+    return skillFail('toolMissing', `No tool in inventory can harvest ${block.name}. Craft or equip the right tool first (e.g. ensurePickaxe for stone/ore).`, {
+      missing: [{ item: `tool for ${block.name}`, need: 1, have: 0 }],
+      detail: { blockType: block.name, heldItem: mineflayer.bot.heldItem?.name ?? null },
+    })
   }
 
-  await mineflayer.bot.dig(block, true)
-  log(mineflayer, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`)
-  return true
+  try {
+    await mineflayer.bot.dig(block, true)
+  }
+  catch (err) {
+    return skillFail('digFailed', `Failed to dig ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}): ${String(err)}.`, {
+      detail: { position: { x: pos.x, y: pos.y, z: pos.z }, blockType: block.name },
+    })
+  }
+
+  log(mineflayer, `Broke ${block.name} at x:${pos.x}, y:${pos.y}, z:${pos.z}.`)
+  return skillOk(`Broke ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}).`)
 }
 
 /**
- * Place a block at the specified position
+ * Place a block at the specified position.
+ *
+ * NOTICE: this is the single surviving implementation. The copy in
+ * `skills/actions/world-interactions.ts` was removed — it had no cheats path and no block-state
+ * handling (wall_torch conversion, `facing=` for stairs/ladders/repeaters, button/lever `face=`),
+ * so placing a torch against a wall silently produced the wrong block.
  */
 export async function placeBlock(
   mineflayer: Mineflayer,
@@ -100,11 +169,13 @@ export async function placeBlock(
   z: number,
   placeOn: BlockFace = 'bottom',
   dontCheat = false,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const mcData = McData.fromBot(mineflayer.bot)
   if (!mcData.getBlockId(blockType)) {
     log(mineflayer, `Invalid block type: ${blockType}.`)
-    return false
+    return skillFail('invalidBlockType', `"${blockType}" is not a known block type. Use the exact Minecraft id, e.g. "oak_planks", "torch", "crafting_table".`, {
+      detail: { blockType },
+    })
   }
 
   const targetDest = new Vec3(Math.floor(x), Math.floor(y), Math.floor(z))
@@ -176,7 +247,7 @@ async function placeWithCheats(
   blockType: string,
   targetDest: Vec3,
   placeOn: BlockFace,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const blockState = getBlockState(blockType, placeOn)
 
   mineflayer.bot.chat(`/setblock ${targetDest.x} ${targetDest.y} ${targetDest.z} ${blockState}`)
@@ -190,7 +261,7 @@ async function placeWithCheats(
   }
 
   log(mineflayer, `Used /setblock to place ${blockType} at ${targetDest}.`)
-  return true
+  return skillOk(`Used /setblock to place ${blockType} at (${targetDest.x}, ${targetDest.y}, ${targetDest.z}).`)
 }
 
 async function placeWithoutCheats(
@@ -198,7 +269,7 @@ async function placeWithoutCheats(
   blockType: string,
   targetDest: Vec3,
   placeOn: BlockFace,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const itemName = blockType === 'redstone_wire' ? 'redstone' : blockType
 
   let block = mineflayer.bot.inventory.items().find(item => item.name === itemName)
@@ -215,31 +286,33 @@ async function placeWithoutCheats(
 
   if (!block) {
     log(mineflayer, `Don't have any ${blockType} to place.`)
-    return false
+    return skillFail('itemMissing', `No ${itemName} in inventory to place. Craft or collect one first.`, {
+      missing: [{ item: itemName, need: 1, have: 0 }],
+      detail: { blockType },
+    })
   }
 
   const targetBlock = mineflayer.bot.blockAt(targetDest)
   if (targetBlock?.name === blockType) {
     log(mineflayer, `${blockType} already at ${targetBlock.position}.`)
-    return false
+    return skillOk(`${blockType} is already at (${targetDest.x}, ${targetDest.y}, ${targetDest.z}); nothing to do.`, {
+      alreadyPresent: true,
+    })
   }
 
   const emptyBlocks = ['air', 'water', 'lava', 'grass', 'short_grass', 'tall_grass', 'snow', 'dead_bush', 'fern']
   if (!emptyBlocks.includes(targetBlock?.name ?? '')) {
-    if (!await clearBlockSpace(mineflayer, targetBlock, blockType)) {
-      return false
-    }
+    const cleared = await clearBlockSpace(mineflayer, targetBlock, blockType)
+    if (!cleared.ok)
+      return cleared
   }
 
   const { buildOffBlock, faceVec } = findPlacementSpot(mineflayer, targetDest, placeOn, emptyBlocks)
-  if (!buildOffBlock) {
+  if (!buildOffBlock || !faceVec) {
     log(mineflayer, `Cannot place ${blockType} at ${targetBlock?.position}: nothing to place on.`)
-    return false
-  }
-
-  if (!faceVec) {
-    log(mineflayer, `Cannot place ${blockType} at ${targetBlock?.position}: no valid face to place on.`)
-    return false
+    return skillFail('noSupport', `Cannot place ${blockType} at (${targetDest.x}, ${targetDest.y}, ${targetDest.z}): every adjacent position is empty, so there is no surface to build off. Place a support block next to it first.`, {
+      detail: { blockType, position: { x: targetDest.x, y: targetDest.y, z: targetDest.z } },
+    })
   }
 
   await moveIntoPosition(mineflayer, blockType, targetBlock)
@@ -250,15 +323,17 @@ async function clearBlockSpace(
   mineflayer: Mineflayer,
   targetBlock: any,
   blockType: string,
-): Promise<boolean> {
-  const removed = await breakBlockAt(mineflayer, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z,
-  )
-  if (!removed) {
+): Promise<SkillResult> {
+  const removed = await breakBlockAt(mineflayer, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z)
+  if (!removed.ok) {
     log(mineflayer, `Cannot place ${blockType} at ${targetBlock.position}: block in the way.`)
-    return false
+    return skillFail('obstructed', `Cannot place ${blockType} at (${targetBlock.position.x}, ${targetBlock.position.y}, ${targetBlock.position.z}): ${targetBlock.name} is in the way and could not be broken — ${removed.message}`, {
+      missing: removed.missing,
+      detail: { blockType, obstruction: targetBlock.name, breakReason: removed.reason },
+    })
   }
   await sleep(200)
-  return true
+  return skillOk('Cleared the space.')
 }
 
 function findPlacementSpot(mineflayer: Mineflayer, targetDest: Vec3, placeOn: BlockFace, emptyBlocks: string[]) {
@@ -358,7 +433,7 @@ async function tryPlaceBlock(
   faceVec: Vec3,
   blockType: string,
   targetDest: Vec3,
-): Promise<boolean> {
+): Promise<SkillResult> {
   await mineflayer.bot.equip(block, 'hand')
   await mineflayer.bot.lookAt(buildOffBlock.position)
 
@@ -366,26 +441,34 @@ async function tryPlaceBlock(
     await mineflayer.bot.placeBlock(buildOffBlock, faceVec)
     log(mineflayer, `Placed ${blockType} at ${targetDest}.`)
     await sleep(200)
-    return true
+    return skillOk(`Placed ${blockType} at (${targetDest.x}, ${targetDest.y}, ${targetDest.z}).`)
   }
-  catch {
+  catch (err) {
     log(mineflayer, `Failed to place ${blockType} at ${targetDest}.`)
-    return false
+    return skillFail('placementRejected', `The server rejected placing ${blockType} at (${targetDest.x}, ${targetDest.y}, ${targetDest.z}): ${String(err)}. The spot may be occupied by an entity, or out of reach.`, {
+      detail: { blockType, position: { x: targetDest.x, y: targetDest.y, z: targetDest.z } },
+    })
   }
 }
 
 /**
  * Use a door at the specified position
  */
-export async function useDoor(mineflayer: Mineflayer, doorPos: Vec3 | null = null): Promise<boolean> {
-  doorPos = doorPos || await findNearestDoor(mineflayer.bot)
+export async function useDoor(mineflayer: Mineflayer, doorPos: Vec3 | null = null): Promise<SkillResult> {
+  doorPos = doorPos || await findNearestDoor(mineflayer)
 
   if (!doorPos) {
     log(mineflayer, 'Could not find a door to use.')
-    return false
+    return skillFail('targetNotFound', 'No door found within 16 blocks.')
   }
 
-  await goToPosition(mineflayer, doorPos.x, doorPos.y, doorPos.z, 1)
+  const arrival = await goToPosition(mineflayer, doorPos.x, doorPos.y, doorPos.z, 1)
+  if (!arrival.ok) {
+    return skillFail('navigationFailed', `Could not reach the door at (${doorPos.x}, ${doorPos.y}, ${doorPos.z}): ${arrival.reason} — ${arrival.message}`, {
+      detail: { position: { x: doorPos.x, y: doorPos.y, z: doorPos.z } },
+    })
+  }
+
   while (mineflayer.bot.pathfinder.isMoving()) {
     await sleep(100)
   }
@@ -393,7 +476,7 @@ export async function useDoor(mineflayer: Mineflayer, doorPos: Vec3 | null = nul
   return await operateDoor(mineflayer, doorPos)
 }
 
-async function findNearestDoor(bot: any): Promise<Vec3 | null> {
+async function findNearestDoor(mineflayer: Mineflayer): Promise<Vec3 | null> {
   const doorTypes = [
     'oak_door',
     'spruce_door',
@@ -408,8 +491,10 @@ async function findNearestDoor(bot: any): Promise<Vec3 | null> {
     'warped_door',
   ]
 
+  // NOTICE: this used to be handed the raw `bot`, but `getNearestBlock` expects the Mineflayer
+  // wrapper — every lookup silently failed, so `useDoor` could never find a door on its own.
   for (const doorType of doorTypes) {
-    const block = getNearestBlock(bot, doorType, 16)
+    const block = getNearestBlock(mineflayer, doorType, 16)
     if (block) {
       return block.position
     }
@@ -417,13 +502,13 @@ async function findNearestDoor(bot: any): Promise<Vec3 | null> {
   return null
 }
 
-async function operateDoor(mineflayer: Mineflayer, doorPos: Vec3): Promise<boolean> {
+async function operateDoor(mineflayer: Mineflayer, doorPos: Vec3): Promise<SkillResult> {
   const doorBlock = mineflayer.bot.blockAt(doorPos)
   await mineflayer.bot.lookAt(doorPos)
 
   if (!doorBlock) {
     log(mineflayer, `Cannot find door at ${doorPos}.`)
-    return false
+    return skillFail('targetNotFound', `No door block at (${doorPos.x}, ${doorPos.y}, ${doorPos.z}).`)
   }
 
   if (!doorBlock.getProperties().open) {
@@ -441,7 +526,7 @@ async function operateDoor(mineflayer: Mineflayer, doorPos: Vec3): Promise<boole
   await mineflayer.bot.activateBlock(doorBlock)
 
   log(mineflayer, `Used door at ${doorPos}.`)
-  return true
+  return skillOk(`Opened, walked through and closed the door at (${doorPos.x}, ${doorPos.y}, ${doorPos.z}).`)
 }
 
 export async function tillAndSow(
@@ -450,44 +535,46 @@ export async function tillAndSow(
   y: number,
   z: number,
   seedType: string | null = null,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const pos = { x: Math.round(x), y: Math.round(y), z: Math.round(z) }
 
   const block = mineflayer.bot.blockAt(new Vec3(pos.x, pos.y, pos.z))
 
   if (!block) {
-    log(mineflayer, `Cannot till, no block at ${pos}.`)
-    return false
+    log(mineflayer, `Cannot till, no block at ${JSON.stringify(pos)}.`)
+    return skillFail('targetNotFound', `No block at (${pos.x}, ${pos.y}, ${pos.z}) — it may be outside loaded chunks.`, {
+      detail: { position: pos },
+    })
   }
 
   if (!canTillBlock(block)) {
     log(mineflayer, `Cannot till ${block.name}, must be grass_block or dirt.`)
-    return false
+    return skillFail('wrongBlockType', `Cannot till ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}): only grass_block, dirt or farmland can be tilled.`, {
+      detail: { position: pos, blockType: block.name },
+    })
   }
 
+  // NOTICE: `blockAt` returning null here means "chunk not loaded", not "nothing above". Treating
+  // that as an obstruction (the old behaviour) made tilling fail at chunk borders for no reason.
   const above = mineflayer.bot.blockAt(new Vec3(pos.x, pos.y + 1, pos.z))
-
-  if (!above) {
-    log(mineflayer, `Cannot till, no block above the block.`)
-    return false
-  }
-
-  if (!isBlockClear(above)) {
+  if (above && !isBlockClear(above)) {
     log(mineflayer, `Cannot till, there is ${above.name} above the block.`)
-    return false
+    return skillFail('obstructed', `Cannot till (${pos.x}, ${pos.y}, ${pos.z}): ${above.name} is sitting on top of it. Break that first.`, {
+      detail: { position: pos, obstruction: above.name },
+    })
   }
 
   await moveIntoRange(mineflayer, block)
 
-  if (!await tillBlock(mineflayer, block, pos)) {
-    return false
-  }
+  const tilled = await tillBlock(mineflayer, block, pos)
+  if (!tilled.ok)
+    return tilled
 
   if (seedType) {
     return await sowSeeds(mineflayer, block, seedType, pos)
   }
 
-  return true
+  return skillOk(`Tilled (${pos.x}, ${pos.y}, ${pos.z}). No seed given, so nothing was planted.`)
 }
 
 function canTillBlock(block: any): boolean {
@@ -498,36 +585,45 @@ function isBlockClear(block: any): boolean {
   return block.name === 'air'
 }
 
-async function tillBlock(mineflayer: Mineflayer, block: any, pos: any): Promise<boolean> {
+async function tillBlock(mineflayer: Mineflayer, block: any, pos: any): Promise<SkillResult> {
   if (block.name === 'farmland') {
-    return true
+    return skillOk('Already farmland.')
   }
 
   const hoe = mineflayer.bot.inventory.items().find(item => item.name.includes('hoe'))
   if (!hoe) {
     log(mineflayer, 'Cannot till, no hoes.')
-    return false
+    return skillFail('itemMissing', 'No hoe in inventory. Call ensureHoe first.', {
+      missing: [{ item: 'hoe', need: 1, have: 0 }],
+    })
   }
 
   await mineflayer.bot.equip(hoe, 'hand')
   await mineflayer.bot.activateBlock(block)
-  log(mineflayer, `Tilled block x:${pos.x.toFixed(1)}, y:${pos.y.toFixed(1)}, z:${pos.z.toFixed(1)}.`)
-  return true
+  log(mineflayer, `Tilled block x:${pos.x}, y:${pos.y}, z:${pos.z}.`)
+  return skillOk(`Tilled (${pos.x}, ${pos.y}, ${pos.z}).`)
 }
 
-async function sowSeeds(mineflayer: Mineflayer, block: any, seedType: string, pos: any): Promise<boolean> {
+async function sowSeeds(mineflayer: Mineflayer, block: any, seedType: string, pos: any): Promise<SkillResult> {
   seedType = fixSeedName(seedType)
 
-  const seeds = mineflayer.bot.inventory.items().find(item => item.name === seedType)
+  // NOTICE: substring match, not equality. The model routinely asks for "wheat" or "beetroot" when
+  // the item is `wheat_seeds` / `beetroot_seeds`; an exact match rejected those and burned a turn.
+  const seeds = mineflayer.bot.inventory
+    .items()
+    .find(item => item.name === seedType || item.name.includes(seedType))
   if (!seeds) {
     log(mineflayer, `No ${seedType} to plant.`)
-    return false
+    return skillFail('itemMissing', `Tilled (${pos.x}, ${pos.y}, ${pos.z}) but there is no ${seedType} in inventory to plant.`, {
+      missing: [{ item: seedType, need: 1, have: 0 }],
+      detail: { position: pos, tilled: true },
+    })
   }
 
   await mineflayer.bot.equip(seeds, 'hand')
   await mineflayer.bot.placeBlock(block, new Vec3(0, -1, 0))
-  log(mineflayer, `Planted ${seedType} at x:${pos.x.toFixed(1)}, y:${pos.y.toFixed(1)}, z:${pos.z.toFixed(1)}.`)
-  return true
+  log(mineflayer, `Planted ${seeds.name} at x:${pos.x}, y:${pos.y}, z:${pos.z}.`)
+  return skillOk(`Tilled (${pos.x}, ${pos.y}, ${pos.z}) and planted ${seeds.name}.`)
 }
 
 function fixSeedName(seedType: string): string {
@@ -537,15 +633,26 @@ function fixSeedName(seedType: string): string {
   return seedType
 }
 
-export async function activateNearestBlock(mineflayer: Mineflayer, type: string): Promise<boolean> {
+export async function activateNearestBlock(mineflayer: Mineflayer, type: string): Promise<SkillResult> {
   const block = getNearestBlock(mineflayer, type, 16)
   if (!block) {
     log(mineflayer, `Could not find any ${type} to activate.`)
-    return false
+    return skillFail('targetNotFound', `No ${type} found within 16 blocks to activate.`, {
+      detail: { blockType: type, searchRange: 16 },
+    })
   }
 
   await moveIntoRange(mineflayer, block)
-  await mineflayer.bot.activateBlock(block)
-  log(mineflayer, `Activated ${type} at x:${block.position.x.toFixed(1)}, y:${block.position.y.toFixed(1)}, z:${block.position.z.toFixed(1)}.`)
-  return true
+
+  try {
+    await mineflayer.bot.activateBlock(block)
+  }
+  catch (err) {
+    return skillFail('activationFailed', `Found ${type} at (${block.position.x}, ${block.position.y}, ${block.position.z}) but activating it failed: ${String(err)}.`, {
+      detail: { blockType: type, position: { x: block.position.x, y: block.position.y, z: block.position.z } },
+    })
+  }
+
+  log(mineflayer, `Activated ${type} at x:${block.position.x}, y:${block.position.y}, z:${block.position.z}.`)
+  return skillOk(`Activated ${type} at (${block.position.x}, ${block.position.y}, ${block.position.z}).`)
 }

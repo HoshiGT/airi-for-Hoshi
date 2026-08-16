@@ -86,4 +86,46 @@ describe('planConsolidation', () => {
     const plan = planConsolidation(session(2), { retainRounds: 10 })
     expect(plan).toBeNull()
   })
+
+  describe('non-trimming passes (archived rounds stay in the conversation)', () => {
+    it('starts after the rounds an earlier pass already summarized', () => {
+      // 20 rounds live, 5 retained, rounds 1-10 already distilled: only 11-15
+      // are new work. Without the watermark the pass would summarize 1-15 again.
+      const plan = planConsolidation(session(20), {
+        retainRounds: 5,
+        consolidatedThroughRound: 10,
+      })
+
+      expect(plan).not.toBeNull()
+      expect(plan!.roundFrom).toBe(11)
+      expect(plan!.roundTo).toBe(15)
+      expect(plan!.archived).toHaveLength(10)
+      expect(plan!.archivedIds.has('u9')).toBe(false)
+      expect(plan!.archivedIds.has('u10')).toBe(true)
+      expect(plan!.archivedIds.has('u14')).toBe(true)
+      expect(plan!.archivedIds.has('u15')).toBe(false)
+    })
+
+    it('returns null when the watermark already covers everything outside the retained window', () => {
+      const plan = planConsolidation(session(20), {
+        retainRounds: 5,
+        consolidatedThroughRound: 15,
+      })
+
+      expect(plan).toBeNull()
+    })
+
+    it('waits for a full batch of new rounds instead of running every turn', () => {
+      // The automatic pass keeps the batch size a trimming run would produce
+      // (triggerRounds - retainRounds), so one new round is not enough.
+      const options = { triggerRounds: 30, retainRounds: 10, minNewRounds: 20 }
+
+      expect(planConsolidation(session(31), { ...options, consolidatedThroughRound: 20 })).toBeNull()
+
+      const plan = planConsolidation(session(50), { ...options, consolidatedThroughRound: 20 })
+      expect(plan).not.toBeNull()
+      expect(plan!.roundFrom).toBe(21)
+      expect(plan!.roundTo).toBe(40)
+    })
+  })
 })

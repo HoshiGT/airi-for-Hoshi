@@ -119,7 +119,8 @@ model-select:
     support-status-header: We support both 2D and 3D models
     support-status: >
       Click {select-button} to select or import models.
-      Currently, {zip} (for Live2D and Spine models) and {vrm} (for VRM models) are supported.
+      Currently, {zip} (for Live2D and Spine models), {vrm} (for VRM models),
+      and {mmd} (for MMD models, zipped with their textures) are supported.
     model-type-example: >
       Neuro-sama uses 2D model driven by framework developed by Live2D Inc,
       while Grok Ani (in Grok Companion) uses 3D model driven by VRM / MMD open formats.
@@ -322,8 +323,10 @@ pages:
     activate: Activate
     active: Active
     active_badge: Currently Active
+    activation_notice: Switched to {name}. The current conversation now uses this character.
     cancel: Cancel action
     save: Save changes
+    save_and_activate: Save and activate
     card_not_found: Card not found
     character: Character
     close: Close
@@ -433,13 +436,13 @@ pages:
     sections:
       chats:
         title: Chat sessions
-        description: Export or import saved chat sessions, together with character cards and consolidated memories.
+        description: Export or import saved chat sessions, together with character cards, consolidated memories and the sticker library.
         export: Export chats
         import: Import chats
         delete: Delete all chat sessions
       models:
         title: Models
-        description: Remove imported Live2D/VRM models.
+        description: Remove imported Live2D, VRM, Spine, and MMD models.
         delete: Delete all models
       modules:
         title: Modules
@@ -463,6 +466,7 @@ pages:
       desktop:
         title: Reset desktop settings & states
         description: Clear AIRI desktop settings and runtime state.
+        center: Move desktop window to center
         reset: Reset desktop data
     confirmations:
       tooltip: Are you sure?
@@ -476,9 +480,10 @@ pages:
       modules_reset: Module settings reset.
       providers_reset: Provider settings reset.
       all_deleted: All local data deleted.
+      desktop_window_centered: Desktop window moved to screen center.
       desktop_reset: Desktop data reset.
   models:
-    description: Live2D, VRM, Spine, etc.
+    description: Live2D, VRM, Spine, MMD, etc.
     title: Models
     sections:
       section:
@@ -713,10 +718,18 @@ pages:
       summarization-model:
         title: Summarization Model
         description: The model used to summarize older conversation into memory and classify it as long- or short-term. Choose it independently from your core model.
+      tools:
+        title: In-chat Memory
+        label: Let the character manage memory during chat
+        description: Gives the character memory_save / memory_recall / memory_forget so it can store, look up, and delete memories on its own initiative while you talk, without asking first. Turn this off to keep memory read-only in chat — consolidation and manual edits below still work.
       cadence:
         title: Consolidation Cadence
-        trigger-label: Trigger after rounds
-        trigger-desc: Start a consolidation pass once the conversation reaches this many rounds.
+        trim-label: Remove summarized rounds from the conversation
+        trim-desc: 'On by default: the live context is capped at the retained rounds, so older rounds are distilled into memory before leaving the conversation. Summarizing is lossy, but the archived summary and long/short memories carry the content forward; only the last two passes can be undone.'
+        auto-label: Daily auto-consolidation
+        auto-desc: Summarize unprocessed rounds into memory on the first conversation each day. When off, only the manual consolidation below runs.
+        layered-label: Layered auto-consolidation (L1 → L3)
+        layered-desc: 'Distill memories incrementally after each reply: L1 facts every few rounds (warm-up 1→2→4→8), L2 scene summaries once enough facts pile up, and L3 global profile from scenes. Runs only while conversations are active.'
         retain-label: Keep recent rounds
         retain-desc: How many of the most recent rounds stay in the live context verbatim.
       prompt:
@@ -749,6 +762,15 @@ pages:
         empty: No memories yet. They appear here after the first consolidation pass.
         importance: Importance
         refresh: Refresh
+        delete: Delete this memory
+      editor:
+        add-button: Add memory
+        content-placeholder: Write something to remember…
+        keywords-placeholder: Tags for recall (space or comma separated, optional)
+        importance-label: Importance
+        save: Save
+        cancel: Cancel
+        edit: Edit this memory
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
@@ -825,6 +847,15 @@ pages:
     vision:
       description: Vision
       title: Vision
+      capture:
+        title: Vision capture cadence
+        description: Tune how frequently the vision ticker captures a frame.
+        enable:
+          label: Enable periodic capture
+          description: When disabled, the vision ticker will not capture frames automatically, saving token usage. You can still use vision through manual tools.
+        interval:
+          label: Capture interval
+          description: Lower values capture more frequently and may increase resource use.
     desktop-control:
       title: Desktop control
       description: Let AIRI see your screen and move the mouse and keyboard
@@ -862,6 +893,28 @@ pages:
       access-token-secret-description: Your X / Twitter access token secret
       access-token-secret-placeholder: Enter your X / Twitter access token secret
       configured: X / Twitter is properly configured!
+    web-search:
+      title: Web Search
+      description: Let AIRI search the web for current information
+      enable: Enable Web Search
+      enable-description: Allow AIRI to search the web during chat
+      api-key: Tavily API Key
+      api-key-description: Web search is powered by Tavily. Get a free API key at tavily.com.
+      api-key-placeholder: Enter your Tavily API key
+      configured: Web search is ready to use!
+    stickers:
+      title: Stickers
+      description: Give AIRI a sticker library she can send in chat
+      enable: Enable stickers
+      enable-description: Allow AIRI to send stickers from the library during chat
+      vision-ready: A vision model is configured — new stickers will be named and described automatically.
+      vision-missing: No vision model configured (Settings → Modules → Vision). New stickers will be named after their file name; you can edit names and descriptions manually.
+      upload: Upload stickers
+      uploading: Tagging…
+      empty: No stickers yet. Upload a few images to get started.
+      name-placeholder: Name (what AIRI writes in the marker)
+      description-placeholder: When should this sticker be used?
+      delete: Remove
     mcp-server:
       title: MCP servers
       description: Configure MCP servers and bring their tools into AIRI.
@@ -1174,6 +1227,13 @@ pages:
               If you do need to use this provider, you will need a dedicated
               proxy backend like a Serverless Function running on
             part6: or some CORS bypassing services to bypass the CORS restrictions.
+      claude-code:
+        description: Use your Claude Code subscription as AIRI's brain via a local bridge.
+        title: Claude Code
+        fields:
+          port:
+            label: Port
+            description: The port the Claude Code brain service listens on.
       cloudflare-workers-ai:
         description: cloudflare.com
         fields:
@@ -1430,6 +1490,9 @@ pages:
       n1n:
         description: n1n.ai - High-performance AI API provider.
         title: n1n
+      openpaths:
+        description: openpaths.io
+        title: OpenPaths
       openrouter:
         description: openrouter.ai
         title: OpenRouter
@@ -1823,6 +1886,55 @@ spine:
   fps:
     options:
       unlimited: Unlimited
+mmd:
+  title: MMD Settings
+  scale-and-position:
+    title: Scale And Position
+    scale: Scale
+    x: X
+    'y': 'Y'
+    rotation: Rotation
+  theme-color-from-model:
+    title: Extract colors from model
+    button-extract:
+      title: Extract
+  physics:
+    title: Physics & Rig
+    enabled: Enable physics (hair, skirt, accessories)
+    ik: Enable IK (inverse kinematics)
+    grant: Enable append-bone propagation
+    gravity: Gravity strength
+  gaze:
+    title: Gaze
+    tracking: Looking at
+    options:
+      cursor: Mouse
+      camera: Camera
+      none: Disabled
+  animation:
+    title: Animation
+    idle-motion: Idle Motion
+    import-motion: Import Motion (.vmd)
+    play-once: Preview Animation
+    remove: Remove motion
+    description: >-
+      Import VMD motion files, set one as the looping idle, or play any as a
+      one-shot gesture. Map emotions to motions to play gestures alongside
+      facial expressions.
+  morphs:
+    title: Morphs
+    auto: (auto)
+    revert: Revert to auto
+    no-morphs: This model exposes no morphs.
+    description: >-
+      The renderer auto-detects standard Japanese morph names (あいうえお,
+      まばたき). Override a slot here if your model uses non-standard names.
+  materials:
+    title: Materials
+    no-materials: This model exposes no materials.
+    description: >-
+      Adjust the opacity of individual model parts (face, hair, clothing,
+      accessories). Set a part to 0 to hide it.
 websocket-secure-enabled:
   title: Enable Secure WebSocket (WSS)
   description: >-

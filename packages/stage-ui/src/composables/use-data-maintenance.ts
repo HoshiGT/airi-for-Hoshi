@@ -16,7 +16,9 @@ import { useFactorioStore } from '../stores/modules/gaming-factorio'
 import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
 import { useHearingStore } from '../stores/modules/hearing'
 import { useSpeechStore } from '../stores/modules/speech'
+import { useStickersStore } from '../stores/modules/stickers'
 import { useTwitterStore } from '../stores/modules/twitter'
+import { useWebSearchStore } from '../stores/modules/web-search'
 import { useOnboardingStore } from '../stores/onboarding'
 import { useProvidersStore } from '../stores/providers'
 import { useSettings, useSettingsAudioDevice } from '../stores/settings'
@@ -35,6 +37,8 @@ export function useDataMaintenance() {
   const speechStore = useSpeechStore()
   const consciousnessStore = useConsciousnessStore()
   const twitterStore = useTwitterStore()
+  const webSearchStore = useWebSearchStore()
+  const stickersStore = useStickersStore()
   const discordStore = useDiscordStore()
   const factorioStore = useFactorioStore()
   const minecraftStore = useMinecraftStore()
@@ -58,9 +62,13 @@ export function useDataMaintenance() {
     speechStore.resetState()
     consciousnessStore.resetState()
     twitterStore.resetState()
+    webSearchStore.resetState()
     discordStore.resetState()
     factorioStore.resetState()
     minecraftStore.resetState()
+    // async because it also clears the sticker image blobs in IndexedDB;
+    // fire-and-forget keeps this reset entrypoint synchronous like the rest.
+    void stickersStore.resetState()
   }
 
   function deleteAllChatSessions() {
@@ -75,6 +83,7 @@ export function useDataMaintenance() {
       cards: airiCardStore.exportCards(),
       activeCardId: airiCardStore.activeCardId,
       memory: await memoryService.exportMemory(),
+      stickers: await stickersStore.exportStickers(),
     }
     return new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   }
@@ -100,6 +109,12 @@ export function useDataMaintenance() {
     if (payload.memory)
       await memoryService.importMemory(payload.memory)
 
+    // Stickers are keyed by their own ids and referenced from message text by
+    // name, so they neither depend on nor affect the session/card ordering
+    // above.
+    if (payload.stickers)
+      await stickersStore.importStickers(payload.stickers)
+
     // Switch to the exporter's active card LAST, after importSessions has
     // persisted the new index and broadcast the sessions-rewritten
     // invalidation: the activeCardId watcher then lands on the imported
@@ -108,6 +123,8 @@ export function useDataMaintenance() {
     // the watcher's ensure run against the pre-import index.
     if (payload.activeCardId && payload.activeCardId !== airiCardStore.activeCardId && airiCardStore.cards.has(payload.activeCardId))
       airiCardStore.activeCardId = payload.activeCardId
+
+    return payload
   }
 
   async function resetSettingsState() {

@@ -5,6 +5,7 @@ import type { AiriBridge } from '../../airi/airi-bridge'
 import type { MinecraftContextService } from '../../airi/minecraft-context-service'
 import type { ConversationUpdateEvent } from '../../debug/types'
 import type { Action } from '../../libs/mineflayer/action'
+import type { VisionFrame } from '../../vision/bot-camera'
 import type { TaskExecutor } from '../action/task-executor'
 import type { ActionInstruction } from '../action/types'
 import type { EventBus, TracedEvent } from '../event-bus'
@@ -12,6 +13,7 @@ import type { PerceptionSignal } from '../perception/types/signals'
 import type { ReflexManager } from '../reflex/reflex-manager'
 import type { BotEvent, MineflayerWithAgents } from '../types'
 import type { PlannerGlobalDescriptor } from './js-planner'
+import type { ActionRuntimeResult } from './js-planner-sandbox-protocol'
 import type { LLMAgent, LLMResult } from './llm-agent'
 import type { LlmLogEntry, LlmLogEntryKind } from './llm-log'
 import type { CancellationToken } from './task-state'
@@ -19,6 +21,7 @@ import type { CancellationToken } from './task-state'
 import { config } from '../../composables/config'
 import { DebugService } from '../../debug'
 import { ActionError } from '../../utils/errors'
+import { hasPendingVisionFrame, takePendingVisionFrame } from '../../vision/bot-camera'
 import { buildConsciousContextView } from './context-view'
 import { createHistoryRuntime } from './history-query'
 import { JavaScriptPlanner } from './js-planner'
@@ -34,6 +37,7 @@ import { PATTERN_CATALOG } from './patterns/catalog'
 import { createPatternRuntime } from './patterns/runtime'
 import { generateBrainSystemPrompt } from './prompts/brain-prompt'
 import { normalizeReplScript } from './repl-code-normalizer'
+import { generateStartupSummary, SessionMemoryStore } from './session-memory'
 import { createCancellationToken } from './task-state'
 
 interface BrainDeps {
@@ -215,8 +219,88 @@ function stringifyForLog(value: unknown): string {
   }
 }
 
+/**
+ * Fold a chat message into the shape duplicate detection compares: case-folded, whitespace
+ * collapsed, punctuation dropped. "我去找木头" and "我去找木头!!" then compare equal, which is the
+ * exact "repeats the previous sentence" symptom from the fast-model spam loop.
+ */
+function normalizeChatMessage(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\p{P}+/gu, '')
+    .trim()
+}
+
+/**
+ * Classic Levenshtein edit distance over code points, computed with a two-row DP so long
+ * messages do not allocate an n×m matrix.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const from = [...a]
+  const to = [...b]
+
+  let previousRow = Array.from({ length: to.length + 1 }, (_, index) => index)
+  for (let rowIndex = 1; rowIndex <= from.length; rowIndex++) {
+    const currentRow = [rowIndex]
+    for (let columnIndex = 1; columnIndex <= to.length; columnIndex++) {
+      const substitutionCost = from[rowIndex - 1] === to[columnIndex - 1] ? 0 : 1
+      currentRow[columnIndex] = Math.min(
+        previousRow[columnIndex]! + 1, // deletion
+        currentRow[columnIndex - 1]! + 1, // insertion
+        previousRow[columnIndex - 1]! + substitutionCost,
+      )
+    }
+    previousRow = currentRow
+  }
+
+  return previousRow[to.length]!
+}
+
+/** 1 for identical strings, down to 0; proportional to the longest string, so short edits on short messages cost more. */
+function chatSimilarity(a: string, b: string): number {
+  const maxLength = Math.max(a.length, b.length)
+  if (maxLength === 0)
+    return 1
+  return 1 - levenshteinDistance(a, b) / maxLength
+}
+
+/**
+ * Builds this turn's user message, carrying a rendered frame alongside the text when the bot took
+ * one for itself.
+ *
+ * The image rides on the newest user message only. `claude-code-brain` forwards images from
+ * messages after the last assistant turn (`services/claude-code-brain/src/translate.ts`), and the
+ * plain-text form of this same message is what goes into `conversationHistory` — so a screenshot is
+ * paid for once, on the turn that needs it, instead of being re-billed for the rest of the session.
+ */
+function buildUserTurnMessage(userMessage: string, frame: VisionFrame | null): Message {
+  if (!frame)
+    return { role: 'user', content: userMessage }
+
+  const vantage = `[VISION] Rendered from your eyes at (${frame.vantage.x}, ${frame.vantage.y}, ${frame.vantage.z}), yaw ${frame.vantage.yaw}, pitch ${frame.vantage.pitch}. This is the only turn that carries this image.`
+
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: `${userMessage}\n\n${vantage}` },
+      { type: 'image_url', image_url: { url: frame.dataUrl } },
+    ],
+  }
+}
+
 const NO_ACTION_FOLLOWUP_SOURCE_ID = 'brain:no_action_followup'
 const NO_ACTION_BUDGET_ALERT_SOURCE_ID = 'brain:no_action_budget'
+const VISION_FOLLOWUP_SOURCE_ID = 'brain:vision_followup'
+
+/**
+ * How many looks in a row may each schedule their own follow-up turn.
+ *
+ * A look only pays off when the model then acts on what it saw. Without a cap, "look, decide to
+ * look again" is a loop that bills an image every turn, so after this many consecutive
+ * vision-triggered turns the pending frame is dropped and the model is told to act instead.
+ */
+const VISION_FOLLOWUP_STREAK_LIMIT = 3
 
 /**
  * Priority tiers for event scheduling (lower = higher priority).
@@ -230,9 +314,56 @@ const MAX_QUEUED_CONTROL_ACTIONS = 5
 const MAX_PENDING_CONTROL_ACTIONS = 4
 const ACTION_QUEUE_RECENT_HISTORY_LIMIT = 20
 const MAX_CONVERSATION_HISTORY_MESSAGES = 200
+
+/**
+ * How many messages to drop at once when history exceeds the cap.
+ *
+ * NOTICE: this exists to protect the backend's prompt cache, and the size is the whole point.
+ *
+ * `claude-code-brain` looks a session up by hashing the concatenated text of every user turn except
+ * the newest (`services/claude-code-brain/src/sessions.ts`). Trimming two messages per turn — the
+ * previous behaviour — changed the head of that user sequence on every single turn, so the hash
+ * missed every time and the backend replayed the entire conversation fresh, forever, from the
+ * moment history first hit the cap.
+ *
+ * Dropping a batch instead means the prefix stays byte-identical for roughly `TRIM_BATCH / 2` turns
+ * (each turn appends one user + one assistant message), so all but one turn in twenty is a cache
+ * hit. History length then oscillates between 160 and 200, which is expected and harmless.
+ */
+const CONVERSATION_HISTORY_TRIM_BATCH = 40
+
+/** How often to checkpoint session memory to disk, in turns. */
+const SESSION_MEMORY_CHECKPOINT_TURNS = 20
+
+/**
+ * Drop the oldest messages once history exceeds the cap, in batches.
+ *
+ * Exported so the cache-prefix property can be asserted directly: after a trim, the head of the
+ * user sequence must stay byte-identical for many consecutive turns. That stability is the entire
+ * mechanism by which the backend can resume a session instead of replaying it — see
+ * CONVERSATION_HISTORY_TRIM_BATCH.
+ */
+export function trimConversationHistory(history: Message[]): Message[] {
+  if (history.length <= MAX_CONVERSATION_HISTORY_MESSAGES)
+    return history
+
+  const overflow = history.length - MAX_CONVERSATION_HISTORY_MESSAGES
+  const trimCount = Math.min(Math.max(overflow, CONVERSATION_HISTORY_TRIM_BATCH), history.length)
+  return history.slice(trimCount)
+}
 const NO_ACTION_FOLLOWUP_BUDGET_DEFAULT = 3
 const NO_ACTION_FOLLOWUP_BUDGET_MAX = 8
 const NO_ACTION_STAGNATION_REPEAT_LIMIT = 2
+
+/**
+ * Wall-clock ceiling on a single LLM attempt.
+ *
+ * NOTICE: this must stay here — `LLMAgent.callLLM` has no fallback of its own. An omitted
+ * `timeoutMs` resolves to `null` there (`llm-agent.ts`), which installs no timer at all, so a
+ * provider that accepts the connection and then never responds would wedge the brain until
+ * something else aborts it. The abort signal only covers pause/destroy, which are operator
+ * actions — nothing fires on its own.
+ */
 const DEFAULT_LLM_ATTEMPT_TIMEOUT_MS = 60_000
 const ERROR_BURST_GUARD_SOURCE_ID = 'brain:error_burst_guard'
 const ERROR_BURST_THRESHOLD = 3
@@ -240,6 +371,31 @@ const ERROR_BURST_WINDOW_TURNS = 5
 const MAX_EVENT_QUEUE_LENGTH = 256
 const MAX_CONSECUTIVE_HIGH_PRIORITY_TURNS = 8
 const PAUSE_ABORT_ERROR_NAME = 'AbortError'
+
+/**
+ * How many of the bot's own public chat messages are kept for duplicate suppression.
+ *
+ * Window of 3: the self-triggered spam loop we are guarding against emits the same sentence (or
+ * a punctuation-tweaked copy) on consecutive turns, so the newest message alone catches most of
+ * it — but 3 also catches the short A/B/A alternation ("好的，我去看看" / "好的，我去看看!!") that
+ * a window of 1 misses. Anything longer would start suppressing legitimate re-use of common
+ * phrases after the bot has said several different things in between, so 3 is the trade-off.
+ */
+const PUBLIC_CHAT_DEDUP_WINDOW = 3
+
+/**
+ * Edit-distance similarity above which a chat message counts as a near-duplicate of a remembered
+ * one (1 = identical). Punctuation is stripped before comparing, so verbatim repeats already
+ * match at 1.0; 0.85 only catches messages of ~7+ characters that differ by a single edit
+ * (e.g. one swapped or added word) without conflating genuinely different short replies.
+ */
+const PUBLIC_CHAT_DEDUP_SIMILARITY_THRESHOLD = 0.85
+
+/**
+ * What the `chat` tool returns instead of sending a suppressed duplicate. Compared by identity
+ * where the outcome is surfaced back to the model, so keep it one stable string.
+ */
+const CHAT_SUPPRESSED_RESULT = 'Chat suppressed: duplicate of a message you already sent. Say something new or act instead.'
 
 /**
  * Turn a cryptic sandbox runtime error into actionable guidance the LLM can act on next turn.
@@ -293,6 +449,13 @@ export class Brain {
   private lastContextView: string | undefined
   private lastReplOutcome: ReplOutcomeSummary | undefined
   private conversationHistory: Message[] = []
+  /**
+   * Durable facts recovered from the previous session, resolved once at startup and then immutable.
+   * See `loadStartupSummary`.
+   */
+  private startupSummary: string | undefined
+  private startupSummaryLoaded = false
+  private readonly sessionMemoryStore = new SessionMemoryStore()
   private lastLlmInputSnapshot: LlmInputSnapshot | null = null
   private runtimeMineflayer: MineflayerWithAgents | null = null
   private readonly llmLogEntries: LlmLogEntry[] = []
@@ -320,8 +483,20 @@ export class Brain {
   private noActionFollowupBudgetRemaining = NO_ACTION_FOLLOWUP_BUDGET_DEFAULT
   private noActionFollowupLastSignature: string | null = null
   private noActionFollowupStagnationCount = 0
+  /** Consecutive turns that were themselves triggered by a look; see {@link VISION_FOLLOWUP_STREAK_LIMIT}. */
+  private visionFollowupStreak = 0
   private errorBurstGuardState: ErrorBurstGuardState | null = null
   private errorBurstGuardSuppressUntilTurnId = 0
+  /**
+   * Earliest moment (ms epoch) a turn the brain scheduled for itself may be enqueued.
+   * Reserved per-event at scheduling time; see {@link scheduleSelfTriggeredEvent}.
+   */
+  private selfTriggeredNextReadyAt = 0
+  /**
+   * Normalized tail of public chat messages that were actually sent, newest last. Cache state
+   * for duplicate suppression only; see {@link PUBLIC_CHAT_DEDUP_WINDOW}.
+   */
+  private recentPublicChatMessages: string[] = []
   private unsubscribeEventBus: (() => void) | null = null
   private onActionCompleted: ((...args: any[]) => void) | null = null
   private onActionFailed: ((...args: any[]) => void) | null = null
@@ -330,9 +505,44 @@ export class Brain {
     this.debugService = DebugService.getInstance()
   }
 
+  /**
+   * Load the previous session's durable facts and freeze them into the system prompt.
+   *
+   * Fire-and-forget by design: the bot must be able to start and act while the summariser is still
+   * thinking. Turns taken before it lands simply have no summary, which is the same as today's
+   * behaviour. Once assigned, `startupSummary` never changes again — the system prompt is the
+   * backend's cache prefix, and rewriting it mid-session would force a full cache-create every turn.
+   */
+  private async loadStartupSummary(): Promise<void> {
+    if (this.startupSummaryLoaded)
+      return
+    this.startupSummaryLoaded = true
+
+    try {
+      const summary = await generateStartupSummary({ store: this.sessionMemoryStore })
+      if (!summary)
+        return
+
+      this.startupSummary = summary
+      this.deps.logger.log('INFO', `Brain: Loaded startup summary from previous session (${summary.length} chars).`)
+    }
+    catch (err) {
+      this.deps.logger.withError(err as Error).warn('Brain: Startup summary unavailable; continuing without it.')
+    }
+  }
+
+  /**
+   * Write the tail of this session's conversation to disk for the next startup to summarise.
+   */
+  public persistSessionMemory(): void {
+    this.sessionMemoryStore.write(this.conversationHistory, this.startupSummary)
+  }
+
   public init(bot: MineflayerWithAgents): void {
     this.deps.logger.log('INFO', 'Brain: Initializing stateful core...')
     this.runtimeMineflayer = bot
+
+    void this.loadStartupSummary()
 
     // Perception Handler
     this.unsubscribeEventBus = this.deps.eventBus.subscribe<PerceptionSignal>('conscious:signal:*', (event: TracedEvent<PerceptionSignal>) => {
@@ -389,7 +599,7 @@ export class Brain {
       }
 
       if (action.tool === 'chat' && action.params?.feedback === true) {
-        this.enqueueEvent(bot, {
+        this.scheduleSelfTriggeredEvent(bot, {
           type: 'feedback',
           payload: { status: 'success', action, result },
           source: { type: 'system', id: 'executor' },
@@ -422,6 +632,8 @@ export class Brain {
   }
 
   public destroy(): void {
+    // Save before tearing anything down, so a restart can pick the thread back up.
+    this.persistSessionMemory()
     this.deps.minecraftContextService.unbindBot()
     if (this.unsubscribeEventBus) {
       this.unsubscribeEventBus()
@@ -977,7 +1189,7 @@ export class Brain {
     if (event.source.type === 'system' && event.source.id === ERROR_BURST_GUARD_SOURCE_ID)
       return
 
-    void this.enqueueEvent(bot, {
+    void this.scheduleSelfTriggeredEvent(bot, {
       type: 'system_alert',
       payload: {
         reason: 'error_burst_guard',
@@ -1300,7 +1512,7 @@ export class Brain {
           if (this.pendingControlActions.length === 0) {
             const completedCount = this.completedControlActionsSinceLastFeedback
             this.completedControlActionsSinceLastFeedback = 0
-            await this.enqueueEvent(bot, {
+            await this.scheduleSelfTriggeredEvent(bot, {
               type: 'feedback',
               payload: {
                 status: 'success',
@@ -1374,7 +1586,7 @@ export class Brain {
             },
           })
 
-          await this.enqueueEvent(bot, {
+          await this.scheduleSelfTriggeredEvent(bot, {
             type: 'feedback',
             payload: {
               status: 'failure',
@@ -1437,7 +1649,7 @@ export class Brain {
     })
 
     const result = await this.deps.taskExecutor.executeActionWithResult({ tool: 'stop', params: {} })
-    void this.enqueueEvent(bot, {
+    void this.scheduleSelfTriggeredEvent(bot, {
       type: 'feedback',
       payload: {
         status: 'success',
@@ -1458,6 +1670,48 @@ export class Brain {
       clearedPendingCount: clearedCount,
       cancelledActiveActionId,
     }
+  }
+
+  /**
+   * Execute a `chat` action unless the message repeats something the bot recently said
+   * publicly, in which case nothing is sent and the model gets the suppression notice as
+   * the tool's return value instead.
+   *
+   * The message is remembered only after a successful send, so a failed send (mineflayer
+   * throws) does not poison the window and the model can retry the same text next turn.
+   */
+  private async executeChatAction(action: ActionInstruction): Promise<unknown> {
+    const message = typeof action.params?.message === 'string' ? action.params.message : ''
+
+    if (this.isDuplicatePublicChatMessage(message)) {
+      return CHAT_SUPPRESSED_RESULT
+    }
+
+    const result = await this.deps.taskExecutor.executeActionWithResult(action)
+    this.rememberPublicChatMessage(message)
+    return result
+  }
+
+  private isDuplicatePublicChatMessage(message: string): boolean {
+    const normalized = normalizeChatMessage(message)
+    // An empty message has nothing meaningful to compare; let the chat action reject it.
+    if (!normalized)
+      return false
+
+    return this.recentPublicChatMessages.some(recent =>
+      normalized === recent
+      || chatSimilarity(normalized, recent) >= PUBLIC_CHAT_DEDUP_SIMILARITY_THRESHOLD,
+    )
+  }
+
+  private rememberPublicChatMessage(message: string): void {
+    const normalized = normalizeChatMessage(message)
+    if (!normalized)
+      return
+
+    this.recentPublicChatMessages.push(normalized)
+    if (this.recentPublicChatMessages.length > PUBLIC_CHAT_DEDUP_WINDOW)
+      this.recentPublicChatMessages.shift()
   }
 
   private queueNoActionFollowup(
@@ -1520,7 +1774,7 @@ export class Brain {
         timestamp: Date.now(),
       }
 
-      void this.enqueueEvent(bot, followupEvent).catch(err =>
+      void this.scheduleSelfTriggeredEvent(bot, followupEvent).catch(err =>
         this.deps.logger.withError(err).error('Brain: Failed to enqueue no-action budget alert'),
       )
       return
@@ -1558,12 +1812,129 @@ export class Brain {
       },
     })
     this.debugService.log('DEBUG', 'Scheduling budgeted no-action follow-up turn')
-    void this.enqueueEvent(bot, followupEvent).catch(err =>
+    void this.scheduleSelfTriggeredEvent(bot, followupEvent).catch(err =>
       this.deps.logger.withError(err).error('Brain: Failed to enqueue no-action follow-up'),
     )
   }
 
+  /**
+   * Gives the model a turn to actually look at the frame it just rendered.
+   *
+   * `look` returns text ("captured, you will see it next turn") because a sandboxed tool cannot
+   * hand back an image. Without a follow-up the picture would sit in the mailbox until some
+   * unrelated event happened to trigger the next turn — which, for an idle bot, could be minutes,
+   * or long enough that the view is no longer what the bot is looking at.
+   */
+  private queueVisionFollowup(
+    bot: MineflayerWithAgents,
+    triggeringEvent: BotEvent,
+    turnId: number,
+    actions: ActionRuntimeResult[],
+  ): void {
+    const looked = actions.some(item => item.action.tool === 'look' && item.ok)
+    if (!looked || !hasPendingVisionFrame())
+      return
+
+    const triggeredByVision = triggeringEvent.source.type === 'system'
+      && triggeringEvent.source.id === VISION_FOLLOWUP_SOURCE_ID
+    this.visionFollowupStreak = triggeredByVision ? this.visionFollowupStreak + 1 : 1
+
+    if (this.visionFollowupStreak > VISION_FOLLOWUP_STREAK_LIMIT) {
+      // Drop the frame with the follow-up: leaving it queued would attach a stale view to whatever
+      // unrelated turn comes next.
+      takePendingVisionFrame()
+      this.visionFollowupStreak = 0
+
+      this.appendLlmLog({
+        turnId,
+        kind: 'scheduler',
+        eventType: triggeringEvent.type,
+        sourceType: triggeringEvent.source.type,
+        sourceId: triggeringEvent.source.id,
+        tags: ['scheduler', 'vision', 'blocked'],
+        text: `Blocked vision follow-up after ${VISION_FOLLOWUP_STREAK_LIMIT} consecutive looks`,
+      })
+
+      void this.scheduleSelfTriggeredEvent(bot, {
+        type: 'system_alert',
+        payload: {
+          reason: 'vision_followup_exhausted',
+          guidance: `You looked ${VISION_FOLLOWUP_STREAK_LIMIT} turns in a row without acting. The latest picture was discarded. Decide from what you already saw, or use the world state and the map.`,
+        },
+        source: { type: 'system', id: VISION_FOLLOWUP_SOURCE_ID },
+        timestamp: Date.now(),
+      }).catch(err =>
+        this.deps.logger.withError(err).error('Brain: Failed to enqueue vision follow-up limit alert'),
+      )
+      return
+    }
+
+    this.appendLlmLog({
+      turnId,
+      kind: 'scheduler',
+      eventType: triggeringEvent.type,
+      sourceType: triggeringEvent.source.type,
+      sourceId: triggeringEvent.source.id,
+      tags: ['scheduler', 'vision'],
+      text: 'Scheduled vision follow-up turn',
+      metadata: { streak: this.visionFollowupStreak },
+    })
+
+    void this.scheduleSelfTriggeredEvent(bot, {
+      type: 'system_alert',
+      payload: {
+        reason: 'vision_frame_ready',
+        guidance: 'The view you rendered is attached to this turn. Act on what you can see.',
+      },
+      source: { type: 'system', id: VISION_FOLLOWUP_SOURCE_ID },
+      timestamp: Date.now(),
+    }).catch(err =>
+      this.deps.logger.withError(err).error('Brain: Failed to enqueue vision follow-up'),
+    )
+  }
+
   // --- Event Queue Logic ---
+
+  /**
+   * Enqueue a follow-up turn the brain arranged for itself, spaced from the previous
+   * self-triggered turn by `config.brain.selfTriggerMinIntervalMs`.
+   *
+   * The slot is reserved when the event is scheduled, not when it runs, so two follow-ups
+   * scheduled back-to-back by the same turn (e.g. a no-action follow-up plus a vision
+   * follow-up) do not collapse onto the same moment and defeat the pacing. Waiting happens
+   * here, outside the triggering turn, so the turn that schedules the event still completes
+   * at full speed.
+   *
+   * External events deliberately bypass this: the perception handler calls `enqueueEvent`
+   * directly, so player chat and damage keep their original latency no matter how busy the
+   * self-triggered lane is.
+   */
+  private async scheduleSelfTriggeredEvent(bot: MineflayerWithAgents, event: BotEvent): Promise<void> {
+    const now = Date.now()
+    const intervalMs = config.brain.selfTriggerMinIntervalMs
+    const dueAt = Math.max(now, this.selfTriggeredNextReadyAt)
+    this.selfTriggeredNextReadyAt = dueAt + intervalMs
+    const waitMs = dueAt - now
+
+    if (waitMs > 0) {
+      this.appendLlmLog({
+        turnId: this.turnCounter,
+        kind: 'scheduler',
+        eventType: event.type,
+        sourceType: event.source.type,
+        sourceId: event.source.id,
+        tags: ['scheduler', 'self_trigger', 'paced'],
+        text: `Pacing self-triggered turn by ${waitMs}ms (min interval ${intervalMs}ms)`,
+        metadata: { waitMs, intervalMs, dueAt },
+      })
+      await sleep(waitMs)
+    }
+
+    // Refresh the timestamp so downstream consumers see when the event was actually
+    // enqueued, not when the triggering turn created it (the wait above can be seconds).
+    event.timestamp = Date.now()
+    await this.enqueueEvent(bot, event)
+  }
 
   private async enqueueEvent(bot: MineflayerWithAgents, event: BotEvent): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -1799,7 +2170,10 @@ export class Brain {
     this.lastContextView = contextView
 
     // 2. Prepare System Prompt (static + bound master identity)
-    const systemPrompt = generateBrainSystemPrompt(this.deps.taskExecutor.getAvailableActions(), { masterUsername: config.bot.masterUsername })
+    const systemPrompt = generateBrainSystemPrompt(this.deps.taskExecutor.getAvailableActions(), {
+      masterUsername: config.bot.masterUsername,
+      startupSummary: this.startupSummary,
+    })
     this.currentInputEnvelope = {
       id: turnId,
       turnId,
@@ -1838,10 +2212,13 @@ export class Brain {
       isProcessing: true,
     })
 
+    // A frame the bot rendered for itself on an earlier turn. Drained once, before the retry loop,
+    // so a retried request still carries the picture the model asked for.
+    const visionFrame = takePendingVisionFrame()
+
     // 3. Call LLM with retry logic
     const maxAttempts = 3
     let result: string | null = null
-    let capturedReasoning: string | undefined
     let lastError: unknown
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Check pause at start of each retry attempt
@@ -1864,7 +2241,7 @@ export class Brain {
         const messages: Message[] = [
           { role: 'system', content: systemPrompt },
           ...this.conversationHistory,
-          { role: 'user', content: userMessage },
+          buildUserTurnMessage(userMessage, visionFrame),
         ]
         this.lastLlmInputSnapshot = {
           systemPrompt,
@@ -1903,8 +2280,9 @@ export class Brain {
         if (!content)
           throw new Error('No content from LLM')
 
-        // Capture reasoning for later use
-        capturedReasoning = reasoning
+        // NOTICE: `reasoning` is consumed here (LLM log + debug trace) and then dropped. It is
+        // deliberately not carried into `conversationHistory` — see the note where the assistant
+        // message is appended.
         result = content
 
         this.debugService.traceLLM({
@@ -2056,21 +2434,31 @@ export class Brain {
     }
 
     try {
-      // Only append to conversation history after successful parsing (avoid dirty data on retry)
+      // Only append to conversation history after successful parsing (avoid dirty data on retry).
+      // Deliberately the plain text, never the image parts built by `buildUserTurnMessage`: a
+      // rendered frame is worth its tokens on the turn that asked for it and nowhere else.
       this.conversationHistory.push({ role: 'user', content: userMessage })
-      // Store reasoning in the assistant message's reasoning field (if available)
-      // Reasoning is transient thinking and doesn't need the [REASONING] prefix hack anymore
+      // NOTICE: `reasoning` is deliberately NOT stored.
+      //
+      // It used to be kept on the assistant message and sent back verbatim on every subsequent
+      // turn, since xsai forwards `messages` into the request body untouched. That is wasted
+      // context — the model's own scratch thinking, re-billed each turn and growing without bound —
+      // and DeepSeek's API documentation explicitly says not to echo `reasoning_content` back.
+      // It is still recorded for the current turn in the LLM log and the debug trace.
       this.conversationHistory.push({
         role: 'assistant',
         content: result,
-        ...(capturedReasoning && { reasoning: capturedReasoning }),
       } as Message)
 
-      // Trim conversation history as an in-memory safety net for long sessions.
-      if (this.conversationHistory.length > MAX_CONVERSATION_HISTORY_MESSAGES) {
-        const trimCount = this.conversationHistory.length - MAX_CONVERSATION_HISTORY_MESSAGES
-        this.conversationHistory = this.conversationHistory.slice(trimCount)
-      }
+      // Trim conversation history as an in-memory safety net for long sessions. Batched on purpose;
+      // see CONVERSATION_HISTORY_TRIM_BATCH.
+      this.conversationHistory = trimConversationHistory(this.conversationHistory)
+
+      // Checkpoint the session memory periodically. `destroy()` also saves, but a bot process is
+      // just as likely to be killed as shut down cleanly, and losing the whole session's context to
+      // a SIGKILL defeats the point of persisting it.
+      if (turnId % SESSION_MEMORY_CHECKPOINT_TURNS === 0)
+        this.persistSessionMemory()
 
       const actionDefs = new Map(this.deps.taskExecutor.getAvailableActions().map(action => [action.name, action]))
 
@@ -2089,6 +2477,10 @@ export class Brain {
             return this.executeStopAction(bot, turnId)
           }
 
+          if (action.tool === 'chat') {
+            return this.executeChatAction(action)
+          }
+
           const isControlAction = this.isQueueConsumingControlAction(action, actionDef)
           if (isControlAction)
             return this.enqueueControlAction(bot, action, turnId)
@@ -2100,12 +2492,19 @@ export class Brain {
         },
       )
 
+      // A suppressed chat never left the bot, so tell the model on its next turn instead of
+      // letting it repeat the same sentence while believing it was sent. The notice rides in the
+      // replay outcome logs, which `buildUserMessage` surfaces as `[SCRIPT] Last eval ... logs=...`.
+      const chatSuppressionNotices = runResult.actions
+        .filter(item => item.action.tool === 'chat' && item.result === CHAT_SUPPRESSED_RESULT)
+        .map(() => CHAT_SUPPRESSED_RESULT)
+
       this.lastReplOutcome = {
         actionCount: runResult.actions.length,
         okCount: runResult.actions.filter(item => item.ok).length,
         errorCount: runResult.actions.filter(item => !item.ok).length,
         returnValue: runResult.returnValue,
-        logs: runResult.logs.slice(-3),
+        logs: [...chatSuppressionNotices, ...runResult.logs].slice(-3),
         updatedAt: Date.now(),
       }
       this.appendLlmLog({
@@ -2141,6 +2540,7 @@ export class Brain {
         })),
       )
       this.maybeActivateErrorBurstGuard(bot, event, turnId)
+      this.queueVisionFollowup(bot, event, turnId, runResult.actions)
 
       if (runResult.actions.length === 0 || runResult.actions.every(item => item.action.tool === 'skip')) {
         this.debugService.emit('debug:repl_result', {
@@ -2207,7 +2607,7 @@ export class Brain {
         durationMs: 0,
         timestamp: Date.now(),
       })
-      void this.enqueueEvent(bot, {
+      void this.scheduleSelfTriggeredEvent(bot, {
         type: 'feedback',
         payload: { status: 'failure', error: augmentedError },
         source: { type: 'system', id: 'brain' },

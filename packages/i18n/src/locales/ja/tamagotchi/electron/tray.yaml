@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: 表示
+      open_at_login: ログイン時に起動
       adjust_sizes: サイズ調節
       recommended_size: おすすめ (450x600)
       full_height: 高さ最大

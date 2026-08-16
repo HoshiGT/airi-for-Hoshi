@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { damageTakenEvent } from './damage-taken'
+import { __resetDamageEscalationLatchForTests, damageTakenEvent } from './damage-taken'
 import { classifyRecentFall, recordPhysicsTick } from './fall-tracker'
 
 // ROOT CAUSE:
@@ -69,7 +69,14 @@ describe('damage_taken cause inference', () => {
   }
 
   // Prime lastHealth to 20, then drop to `to`, returning the dropped-health ctx ready for extract().
+  //
+  // NOTICE: the latch is reset first, and every case below inflicts at least 6 damage. These tests
+  // are about *attribution*, not about the escalation gate in damage-taken.ts — the gate keeps its
+  // own module-level latch that would otherwise carry over between cases, and it deliberately
+  // swallows small hits from a single mob. A heavy hit always clears the gate, so what is asserted
+  // here stays focused on which entity gets blamed. The gate itself is covered in damage-taken.test.ts.
   function primeDamage(entity: Record<string, any>, to: number, nearby: Record<string, any> = {}): any {
+    __resetDamageEscalationLatchForTests()
     const full = makeCtx(20, entity, nearby)
     damageTakenEvent.mineflayer.filter!(full) // sets lastHealth = 20, returns false
     const hurt = makeCtx(to, entity, nearby)
@@ -100,7 +107,7 @@ describe('damage_taken cause inference', () => {
     recordPhysicsTick(motion(0, true), Date.now())
 
     const zombie = { type: 'mob', name: 'zombie', id: 42, _distance: 1.5 }
-    const hurt = primeDamage(motion(0, true), 16, { 42: zombie })
+    const hurt = primeDamage(motion(0, true), 13, { 42: zombie })
     const extracted = damageTakenEvent.mineflayer.extract(hurt) as { damageSource: { cause: string, name?: string }, attacker: string }
     expect(extracted.damageSource.cause).toBe('mob')
     expect(extracted.damageSource.name).toBe('zombie')
@@ -114,7 +121,7 @@ describe('damage_taken cause inference', () => {
     recordPhysicsTick(motion(0, true), Date.now()) // grounded, not a fall
 
     const master = { type: 'player', name: 'player', username: 'dssadg', id: 7, _distance: 1 }
-    const hurt = primeDamage(motion(0, true), 16, { 7: master })
+    const hurt = primeDamage(motion(0, true), 13, { 7: master })
     const extracted = damageTakenEvent.mineflayer.extract(hurt) as { damageSource: { cause: string }, attacker: string }
     expect(extracted.damageSource.cause).toBe('player')
     expect(extracted.attacker).toBe('dssadg')

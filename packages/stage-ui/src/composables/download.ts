@@ -1,19 +1,13 @@
+import { saveFile } from '@proj-airi/stage-shared'
+
+/**
+ * Prepares a download of `data` under `filename`.
+ *
+ * Delivery is delegated to {@link saveFile}, so mobile hosts that cannot handle
+ * an anchor click still receive the file through their own handler.
+ */
 export function useDownload(data: Blob, filename: string) {
-  function download() {
-    const url = URL.createObjectURL(data)
-
-    const downloadLink = document.createElement('a')
-    downloadLink.href = url
-    downloadLink.download = filename
-    downloadLink.click()
-
-    // Clean up the URL object after the download
-    setTimeout(() => {
-      URL.revokeObjectURL(url)
-    }, 5000)
-  }
-
   return {
-    download,
+    download: () => saveFile(data, filename),
   }
 }

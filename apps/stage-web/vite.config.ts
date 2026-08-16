@@ -38,6 +38,12 @@ function hasFlagEnableMkcert(): boolean {
 }
 
 export default defineConfig({
+  // ffish-module.ts inlines ffish.wasm as a `?inline` data URI; Vite only
+  // applies `?inline` to files listed in assetsInclude, and .wasm is not an
+  // asset by default.
+  assetsInclude: [
+    '**/ffish-es6/**/*.wasm',
+  ],
   optimizeDeps: {
     exclude: [
       // Internal Packages

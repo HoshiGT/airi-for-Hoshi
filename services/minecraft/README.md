@@ -143,6 +143,45 @@ The action layer is responsible for the actual execution of tasks in the world. 
 - **Action Registry** (`action-registry.ts`): Validates params and dispatches tool calls.
 - **Tool Catalog** (`llm-actions.ts`): Action/tool definitions and schemas bound to mineflayer skills.
 
+### Vision (the `look` tool)
+
+**Location**: `src/vision/`
+
+Lets the bot render a first-person frame of the world and send it to the model as an image, for the
+questions the text world state cannot answer ("is this build straight?", "what is that structure?").
+
+**How a look happens**:
+
+1. The model calls `look` in its planner script. The tool returns text only — a sandboxed tool cannot
+   hand back an image.
+2. `BotCamera` (`bot-camera.ts`) starts, on first use only, a prismarine-viewer web server plus a
+   headless Chromium page and keeps both alive. The first look pays for the browser launch and chunk
+   meshing; later ones cost a screenshot.
+3. The frame waits in a one-slot mailbox. The brain drains it and attaches it to the **next** user
+   message as an image content part, then schedules a follow-up turn so the model sees it promptly.
+   Conversation history keeps the text form only, so an image is billed once.
+
+**Version translation**: prismarine-viewer's newest renderer is 1.21.4 while the bot may be on any
+1.21.x, and block state ids are not stable across those releases (961 of 1095 blocks shift between
+1.21.4 and 1.21.11 — raw ids would draw `redstone_wire` where the world has `diamond_ore`).
+`block-state-bridge.ts` rewrites every id in the chunk stream, and `viewer-feed.ts` applies it by
+handing the viewer a proxied bot rather than patching the upstream package.
+
+**Known limits**:
+- Block entities (chests, signs, beds) are not drawn — a prismarine-viewer limitation.
+- Sections dense enough to use direct block storage (>256 distinct states in one 16³ region) render
+  as air; the renderer's chunk reader drops them. See the `NOTICE` in `block-state-bridge.ts`.
+- Blocks added after 1.21.4 have no counterpart and are drawn as stone.
+
+**Configuration**: `ENABLE_BOT_VISION`, `BOT_VISION_PORT`, `BOT_VISION_WIDTH`, `BOT_VISION_HEIGHT`,
+`BOT_VISION_VIEW_DISTANCE` (see `.env`). Needs the Playwright Chromium build:
+`pnpm exec playwright install chromium`. Frame size drives image token cost (about
+`width * height / 750` tokens per look). The newest frame is mirrored to `data/vision/latest.jpg`
+for debugging.
+
+**Tests**: `pnpm exec vitest run src/vision` covers the translation; the render path needs a browser
+and is opt-in with `RUN_VISION_RENDER_TEST=1`.
+
 ### Event Flow Example
 
 **Scenario: "Build a house"**
@@ -202,6 +241,10 @@ src/
 │   ├── config.ts              # Environment schema + defaults
 │   ├── runtime-config.ts      # Persisted local runtime config
 │   └── bot.ts
+├── vision/                    # 👁️ First-person rendering for the `look` tool
+│   ├── bot-camera.ts          # Headless browser lifecycle, capture, pending-frame mailbox
+│   ├── viewer-feed.ts         # Viewer web server fed by a translated view of the bot
+│   └── block-state-bridge.ts  # Block state id translation between MC versions
 ├── debug/                     # Debug dashboard, MCP REPL, viewer integration
 ├── libs/
 │   └── mineflayer/           # Mineflayer bot wrapper/adapters

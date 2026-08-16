@@ -1,7 +1,7 @@
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { refManualReset } from '@vueuse/core'
 import { defineStore } from 'pinia'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import { useProvidersStore } from '../providers'
 
@@ -17,7 +17,7 @@ export const useConsciousnessStore = defineStore('consciousness', () => {
 
   // Computed properties
   const supportsModelListing = computed(() => {
-    return providersStore.getProviderMetadata(activeProvider.value)?.capabilities.listModels !== undefined
+    return providersStore.findProviderMetadata(activeProvider.value)?.capabilities.listModels !== undefined
   })
 
   const providerModels = computed(() => {
@@ -52,14 +52,34 @@ export const useConsciousnessStore = defineStore('consciousness', () => {
     modelSearchQuery.reset()
   }
 
+  // A model id belongs to the catalog of the provider it was picked from, so
+  // clear the selection whenever the provider changes. This used to live only
+  // in the consciousness settings page, so provider changes made elsewhere
+  // (onboarding, character cards, provider deletion) kept the previous
+  // provider's model and chat requests failed upstream with model_not_found.
+  //
+  // The watcher is synchronous on purpose: call sites assign the provider
+  // first and a new model right after (e.g. use-auth-provider-sync), so a
+  // deferred reset would wipe the model they just chose. Synchronous flush
+  // makes "set provider, then set model" a safe, ordered operation.
+  //
+  // Issue #1761: https://github.com/moeru-ai/airi/issues/1761
+  watch(activeProvider, (provider, oldProvider) => {
+    if (provider === oldProvider)
+      return
+
+    activeModel.value = ''
+    activeCustomModelName.value = ''
+  }, { flush: 'sync' })
+
   async function loadModelsForProvider(provider: string) {
-    if (provider && providersStore.getProviderMetadata(provider)?.capabilities.listModels !== undefined) {
+    if (providersStore.findProviderMetadata(provider)?.capabilities.listModels !== undefined) {
       await providersStore.fetchModelsForProvider(provider)
     }
   }
 
   async function getModelsForProvider(provider: string) {
-    if (provider && providersStore.getProviderMetadata(provider)?.capabilities.listModels !== undefined) {
+    if (providersStore.findProviderMetadata(provider)?.capabilities.listModels !== undefined) {
       return providersStore.getModelsForProvider(provider)
     }
 
@@ -98,3 +118,30 @@ export const useConsciousnessStore = defineStore('consciousness', () => {
     resetState,
   }
 })
+
+/**
+ * Resolves the setup error for the selected chat provider and model.
+ *
+ * Use when:
+ * - A chat entry point needs to fail before provider instantiation.
+ * - User-facing diagnostics should explain the missing Consciousness selection.
+ *
+ * Expects:
+ * - `providerId` is the current `settings/consciousness/active-provider` value.
+ * - `modelId` is the current `settings/consciousness/active-model` value.
+ *
+ * Returns:
+ * - A setup error when no provider or model is selected, otherwise `undefined`.
+ */
+export function resolveActiveConsciousnessProviderError(providerId: string, modelId: string): string | undefined {
+  if (!providerId)
+    return 'No active chat provider selected. Select a provider in Settings > Consciousness.'
+
+  // Sending depends on a model as much as on a provider: an empty model fails
+  // upstream with model_not_found, so it is the same "module not configured"
+  // class and is reported here instead of leaking the provider error.
+  if (!modelId.trim())
+    return 'No active chat model selected. Select a model in Settings > Consciousness.'
+
+  return undefined
+}

@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: Mostrar
+      open_at_login: Iniciar al arrancar
       adjust_sizes: Ajustar tamaños
       recommended_size: Recomendado (450x600)
       full_height: Altura Completa

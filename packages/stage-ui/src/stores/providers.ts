@@ -132,7 +132,7 @@ function trackModelListLoaded(properties: {
 
   capturePosthogEvent('model_list_loaded', {
     ...properties,
-    surface: analyticsSurface(),
+    app_surface: analyticsSurface(),
   })
 }
 
@@ -150,7 +150,7 @@ function trackModelListFailed(properties: {
 
   capturePosthogEvent('model_list_failed', {
     ...properties,
-    surface: analyticsSurface(),
+    app_surface: analyticsSurface(),
   })
 }
 
@@ -2720,14 +2720,36 @@ export const useProvidersStore = defineStore('providers', () => {
   function getProviderMetadata(providerId: string) {
     const metadata = providerMetadata[providerId]
 
-    if (!metadata)
+    if (!metadata) {
+      // Split "nothing selected yet" (the localStorage default '') from an
+      // unknown id: the former is a user state, so its diagnostic should say
+      // what to do instead of the empty-hole "Provider metadata for  not found".
+      if (!providerId)
+        throw new Error('Provider metadata requested without a provider id. Select a provider first.')
+
       throw new Error(`Provider metadata for ${providerId} not found`)
+    }
 
     return {
       ...metadata,
       localizedName: t(metadata.nameKey, metadata.name),
       localizedDescription: t(metadata.descriptionKey, metadata.description),
     }
+  }
+
+  // Non-throwing variant of getProviderMetadata for capability checks against
+  // possibly-unset provider selections (fresh installs, reset state, deleted
+  // providers persist '' or stale ids in localStorage). Callers that require
+  // the provider to exist should keep using getProviderMetadata.
+  //
+  // Issue #1761: capability computeds used `getProviderMetadata(...)?.` as if
+  // it returned undefined, but it throws — surfacing raw "Provider metadata
+  // for  not found" errors whenever no provider was selected yet.
+  function findProviderMetadata(providerId: string) {
+    if (!providerId || !providerMetadata[providerId])
+      return undefined
+
+    return getProviderMetadata(providerId)
   }
 
   // Get all providers metadata (for settings page).
@@ -2778,8 +2800,15 @@ export const useProvidersStore = defineStore('providers', () => {
       return cached
 
     const metadata = providerMetadata[providerId]
-    if (!metadata)
+    if (!metadata) {
+      // Same empty-selection vs unknown-id split as getProviderMetadata: an
+      // empty id reaching here is a missing module selection, which the user
+      // can act on, not a lookup typo.
+      if (!providerId)
+        throw new Error('Provider instance requested without a provider id. Select a provider first.')
+
       throw new Error(`Provider metadata for ${providerId} not found`)
+    }
 
     // Providers that don't require credentials use empty config
     let config = providerCredentials.value[providerId]
@@ -2919,6 +2948,7 @@ export const useProvidersStore = defineStore('providers', () => {
     providerRuntimeState,
     providerMetadata,
     getProviderMetadata,
+    findProviderMetadata,
     getTranscriptionFeatures,
     allProvidersMetadata,
     initializeProvider,

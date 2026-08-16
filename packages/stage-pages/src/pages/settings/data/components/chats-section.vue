@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import type { ChatSessionsExport } from '@proj-airi/stage-ui/types/chat-session'
+
 import type { DataSettingsStatusEmits } from '../status'
 
+import { saveFile } from '@proj-airi/stage-shared'
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { useDataMaintenance } from '@proj-airi/stage-ui/composables/use-data-maintenance'
 import { Button, DoubleCheckButton } from '@proj-airi/ui'
@@ -9,6 +12,12 @@ import { useI18n } from 'vue-i18n'
 
 import { createDataSettingsStatusHelpers } from '../status'
 
+interface Props {
+  /** Mirrors a validated desktop import into the chat authority renderer. */
+  syncImportedChats?: (payload: ChatSessionsExport) => Promise<void>
+}
+
+const props = defineProps<Props>()
 const emit = defineEmits<DataSettingsStatusEmits>()
 const { t } = useI18n()
 const { trackDataAction } = useAnalytics()
@@ -28,12 +37,7 @@ function triggerImportPicker() {
 async function triggerExport() {
   try {
     const blob = await exportChatSessions()
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `airi-chat-sessions-${new Date().toISOString()}.json`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    await saveFile(blob, `airi-chat-sessions-${new Date().toISOString()}.json`)
     trackDataAction({ action: 'chats_exported' })
     emitStatus(t('settings.pages.data.status.exported'))
   }
@@ -62,7 +66,8 @@ async function handleImport(event: Event) {
   try {
     const raw = await file.text()
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    await importChatSessions(parsed)
+    const imported = await importChatSessions(parsed)
+    await props.syncImportedChats?.(imported)
     importError.value = ''
     trackDataAction({ action: 'chats_imported' })
     emitStatus(t('settings.pages.data.status.imported'))

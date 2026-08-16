@@ -10,6 +10,7 @@ export {
 } from './messages/context-prompt'
 export type { ContextSnapshot } from './messages/context-prompt'
 export { formatTimePrefix } from './messages/datetime-prefix'
+export { formatStickerMarker, parseStickerMarker } from './messages/sticker-marker'
 export { createChatHooks } from './runtime/agent-hooks'
 export type {
   ChatOrchestratorLifecycleRecord,
@@ -50,6 +51,7 @@ export type {
   ChatHistoryItem,
   ChatMessage,
   ChatSlices,
+  ChatSlicesSticker,
   ChatSlicesText,
   ChatSlicesToolCall,
   ChatSlicesToolCallResult,

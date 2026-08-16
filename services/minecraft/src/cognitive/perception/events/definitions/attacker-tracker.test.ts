@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { recentAttacker, recordAttacker } from './attacker-tracker'
-import { damageTakenEvent } from './damage-taken'
+import { __resetDamageEscalationLatchForTests, damageTakenEvent } from './damage-taken'
 
 // ROOT CAUSE:
 //
@@ -26,7 +26,11 @@ function makeCtx(health: number, entity: Record<string, any>, nearby: Record<str
   }
 }
 
+// NOTICE: resets the escalation latch and inflicts a heavy hit, so the gate in damage-taken.ts is
+// guaranteed open and these tests stay about *attribution* — which entity gets blamed — rather than
+// about whether the hit was worth waking the brain. The gate has its own tests.
 function primeDamage(entity: Record<string, any>, to: number, nearby: Record<string, any> = {}): any {
+  __resetDamageEscalationLatchForTests()
   damageTakenEvent.mineflayer.filter!(makeCtx(20, entity, nearby)) // sets lastHealth = 20
   const hurt = makeCtx(to, entity, nearby)
   expect(damageTakenEvent.mineflayer.filter!(hurt)).toBe(true)
@@ -56,7 +60,7 @@ describe('damage attribution via the real attacker', () => {
     // entityHurt fired with the REAL source = the skeleton, even though the master stands closer
     recordAttacker(skeleton, Date.now())
 
-    const hurt = primeDamage(groundedSelf, 18, { 7: master, 9: skeleton })
+    const hurt = primeDamage(groundedSelf, 12, { 7: master, 9: skeleton })
     const extracted = damageTakenEvent.mineflayer.extract(hurt) as { damageSource: { cause: string, name?: string }, attacker: string }
     expect(extracted.damageSource.cause).toBe('mob')
     expect(extracted.damageSource.name).toBe('skeleton')
@@ -67,7 +71,7 @@ describe('damage attribution via the real attacker', () => {
     const master = { type: 'player', username: 'dssadg', name: 'player', id: 7, _distance: 1 }
     recordAttacker(master, Date.now())
 
-    const hurt = primeDamage(groundedSelf, 18, { 7: master })
+    const hurt = primeDamage(groundedSelf, 12, { 7: master })
     const extracted = damageTakenEvent.mineflayer.extract(hurt) as { damageSource: { cause: string }, attacker: string }
     expect(extracted.damageSource.cause).toBe('player')
     expect(extracted.attacker).toBe('dssadg')

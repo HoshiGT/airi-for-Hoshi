@@ -18,6 +18,7 @@ import { setupMineflayerViewer } from './debug/mineflayer-viewer'
 import { Mineflayer, wrapPlugin } from './libs/mineflayer'
 import { MinecraftBotRuntime } from './minecraft-bot-runtime'
 import { initLogger, useLogger } from './utils/logger'
+import { disposeBotCamera } from './vision/bot-camera'
 
 // ...
 
@@ -184,6 +185,10 @@ async function main() {
   }
 
   process.on('SIGINT', () => {
+    // The headless browser is a child process of its own; without this it outlives the bot.
+    Promise.resolve(disposeBotCamera())
+      .catch((err: Error) => logger.errorWithError('Failed to stop the vision renderer cleanly', err))
+
     Promise.resolve(activeRuntime?.stop())
       .catch((err: Error) => {
         logger.errorWithError('Failed to stop Minecraft runtime cleanly', err)

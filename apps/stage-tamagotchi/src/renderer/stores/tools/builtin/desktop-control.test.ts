@@ -41,34 +41,27 @@ describe('executeDesktopLook', () => {
       .toThrowError(/turned off/)
   })
 
-  it('captures a frame, stores its geometry, and returns the vision text', async () => {
+  it('captures a frame, stores its geometry, and returns the screenshot as an image block', async () => {
     const store = makeStore()
     const invokers = makeInvokers()
-    const runVision = vi.fn(async () => 'A code editor is open.')
 
-    const result = await executeDesktopLook({ mode: 'describe', target: '' }, { store, invokers, runVision })
+    const result = await executeDesktopLook({ mode: 'describe', target: '' }, { store, invokers })
 
     expect(invokers.screenshot).toHaveBeenCalledOnce()
     expect(store.setLastScreenshot).toHaveBeenCalledWith(SCREENSHOT)
-    expect(runVision).toHaveBeenCalledWith({ imageDataUrl: SCREENSHOT.dataUrl, prompt: expect.any(String) })
-    expect(result).toBe('A code editor is open.')
+    // Text hint first, then the frame itself — xsAI forwards this content-part
+    // array verbatim so the chat model sees the screen directly.
+    expect(result[0].type).toBe('text')
+    expect(result[1]).toEqual({ type: 'image_url', image_url: { url: SCREENSHOT.dataUrl } })
   })
 
-  it('builds a locate prompt that names the target and image size', async () => {
-    const runVision = vi.fn(async () => '(100, 200) — found it')
-    await executeDesktopLook({ mode: 'locate', target: 'the Send button' }, { store: makeStore(), invokers: makeInvokers(), runVision })
+  it('builds a locate hint that names the target and image size', async () => {
+    const result = await executeDesktopLook({ mode: 'locate', target: 'the Send button' }, { store: makeStore(), invokers: makeInvokers() })
 
-    expect(runVision).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringContaining('the Send button') }))
-    expect(runVision).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringContaining('1280x800') }))
-  })
-
-  it('maps a vision configuration error to actionable guidance', async () => {
-    const runVision = vi.fn(async () => {
-      throw new Error('Vision provider/model not configured')
-    })
-    await expect(executeDesktopLook({ mode: 'describe', target: '' }, { store: makeStore(), invokers: makeInvokers(), runVision }))
-      .rejects
-      .toThrowError(/Settings → Modules → Vision/)
+    expect(result[0].type).toBe('text')
+    expect(result[0].text).toContain('the Send button')
+    expect(result[0].text).toContain('1280x800')
+    expect(result[1].image_url.url).toBe(SCREENSHOT.dataUrl)
   })
 })
 

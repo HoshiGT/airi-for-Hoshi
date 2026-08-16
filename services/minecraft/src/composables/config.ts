@@ -38,11 +38,44 @@ export const configSchema = z.object({
     baseUrl: httpUrlString('OPENAI_API_BASEURL'),
     model: requiredString('OPENAI_MODEL'),
     reasoningModel: requiredString('OPENAI_REASONING_MODEL'),
+    /**
+     * Sent as `reasoning_effort`. `low` is absent on purpose — @xsai/shared-chat
+     * does not list it.
+     *
+     * NOTICE: `medium` is a deliberately conservative default, not the cheap one.
+     *
+     * Thinking is 89% of output tokens and the difference between a 2.1s turn and
+     * a 12.7s one, so `none` looks strictly better — but a 2026-08-13 session
+     * proved otherwise: turn rate went from 4.9/min to 37.3/min, and since the
+     * brain has no minimum interval between the follow-up turns it schedules for
+     * itself, the bot spammed public server chat roughly once a second. The LLM's
+     * own latency had been acting as the only rate limiter.
+     *
+     * Removal condition: once self-triggered turns are paced (and/or trivial
+     * reactions are handled by the reflex/rule layer instead of the brain), drop
+     * this to `none` — the token and latency win is real and large.
+     */
+    reasoningEffort: z.enum(['none', 'minimal', 'medium', 'high', 'xhigh']).default('medium'),
   }),
   debug: z.object({
     mcp: z.boolean().default(false),
     server: z.boolean().default(false),
     viewer: z.boolean().default(false),
+  }),
+  vision: z.object({
+    enabled: z.boolean().default(true),
+    // Separate from the debug viewer's port so both can run side by side; this one only ever
+    // serves the bot's own headless browser.
+    port: z.coerce.number().int().min(1).max(65535).default(3008),
+    // The third-person selfie renderer runs its own viewer feed; it needs a second port for the
+    // same reason the debug viewer does — two prismarine-viewer servers cannot share one.
+    selfiePort: z.coerce.number().int().min(1).max(65535).default(3009),
+    // Frame size drives the model's image token cost (roughly width*height/750 tokens), so it is
+    // kept modest: large enough to read block shapes, small enough to look often.
+    width: z.coerce.number().int().min(160).max(1920).default(640),
+    height: z.coerce.number().int().min(120).max(1080).default(400),
+    // Chunks streamed around the bot. Each extra ring costs meshing time on the first look.
+    viewDistance: z.coerce.number().int().min(1).max(8).default(4),
   }),
   bot: z.object({
     username: requiredString('BOT_USERNAME'),
@@ -62,6 +95,17 @@ export const configSchema = z.object({
     // In-game username of the bot's owner ("主人"). Binds the relayed "主人" role to the real
     // player so the bot recognizes its master in-world (e.g. does not flee when the master hits it).
     masterUsername: z.string().trim().min(1).optional(),
+  }),
+  brain: z.object({
+    /**
+     * Minimum interval between turns the brain schedules for itself: the follow-up loop it
+     * drives on its own (action feedback, no-action/vision follow-ups, burst-guard alerts).
+     *
+     * This is the pacing that used to be missing: with a fast model the loop ran about once
+     * a second and spammed public server chat. External events (player chat, damage, ...)
+     * never wait on this clock. Set to 0 to disable the pacing entirely.
+     */
+    selfTriggerMinIntervalMs: z.coerce.number().int().min(0).default(3000),
   }),
   airi: z.object({
     wsBaseUrl: wsUrlString('AIRI_WS_BASEURL'),
@@ -102,6 +146,17 @@ const defaultConfig: Omit<Config, 'openai'> = {
     server: false,
     viewer: false,
   },
+  vision: {
+    enabled: true,
+    port: 3008,
+    selfiePort: 3009,
+    width: 640,
+    height: 400,
+    viewDistance: 4,
+  },
+  brain: {
+    selfTriggerMinIntervalMs: 3000,
+  },
 }
 
 // Create a singleton config instance
@@ -118,11 +173,22 @@ export function initEnv(): void {
       baseUrl: env.OPENAI_API_BASEURL,
       model: env.OPENAI_MODEL,
       reasoningModel: env.OPENAI_REASONING_MODEL,
+      reasoningEffort: env.OPENAI_REASONING_EFFORT,
     },
     debug: {
       mcp: env.ENABLE_MCP_SERVER === 'true',
       server: env.ENABLE_DEBUG_SERVER === 'true',
       viewer: env.ENABLE_MINECRAFT_VIEWER === 'true',
+    },
+    vision: {
+      // Opt-out rather than opt-in: the renderer stays dormant until the model actually looks,
+      // so an unused camera costs nothing but a missing one silently blinds the bot.
+      enabled: env.ENABLE_BOT_VISION !== 'false',
+      port: env.BOT_VISION_PORT || defaultConfig.vision.port,
+      selfiePort: env.BOT_VISION_SELFIE_PORT || defaultConfig.vision.selfiePort,
+      width: env.BOT_VISION_WIDTH || defaultConfig.vision.width,
+      height: env.BOT_VISION_HEIGHT || defaultConfig.vision.height,
+      viewDistance: env.BOT_VISION_VIEW_DISTANCE || defaultConfig.vision.viewDistance,
     },
     bot: {
       username: env.BOT_USERNAME || defaultConfig.bot.username,
@@ -138,6 +204,9 @@ export function initEnv(): void {
       clientName: env.AIRI_CLIENT_NAME ?? defaultConfig.airi.clientName,
       token: env.AIRI_WS_TOKEN || defaultConfig.airi.token,
     },
+    brain: {
+      selfTriggerMinIntervalMs: env.BRAIN_SELF_TRIGGER_MIN_INTERVAL_MS || defaultConfig.brain.selfTriggerMinIntervalMs,
+    },
   })
 
   if (!parsedConfig.success) {
@@ -151,6 +220,14 @@ export function initEnv(): void {
   config.bot = parsedConfig.data.bot
   config.airi = parsedConfig.data.airi
   config.debug = parsedConfig.data.debug
+  config.brain = parsedConfig.data.brain
 
-  logger.withFields({ config }).log('Environment variables initialized')
+  logger.withFields({
+    config: {
+      ...config,
+      openai: { ...config.openai, apiKey: '[REDACTED]' },
+      bot: { ...config.bot, password: '[REDACTED]' },
+      airi: { ...config.airi, token: '[REDACTED]' },
+    },
+  }).log('Environment variables initialized')
 }

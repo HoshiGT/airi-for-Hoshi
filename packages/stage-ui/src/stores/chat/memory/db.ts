@@ -37,13 +37,16 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
   await database.execute(sql`
     CREATE TABLE IF NOT EXISTS memory_items (
       id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       kind TEXT NOT NULL,
+      layer INTEGER NOT NULL DEFAULT 1,
       content TEXT NOT NULL,
       importance REAL NOT NULL,
       keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
       source_round_from INTEGER,
       source_round_to INTEGER,
+      aggregated_at TIMESTAMP,
       created_at TIMESTAMP NOT NULL DEFAULT now(),
       last_accessed_at TIMESTAMP,
       access_count INTEGER NOT NULL DEFAULT 0
@@ -52,6 +55,7 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
   await database.execute(sql`
     CREATE TABLE IF NOT EXISTS archived_summaries (
       id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       summary TEXT NOT NULL,
       raw_messages JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -64,6 +68,7 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
     CREATE TABLE IF NOT EXISTS consolidation_runs (
       id TEXT PRIMARY KEY,
       seq SERIAL NOT NULL,
+      character_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       archived_messages JSONB NOT NULL DEFAULT '[]'::jsonb,
       memory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -73,8 +78,34 @@ export async function applyMemorySchema(database: MemoryDatabase): Promise<void>
       created_at TIMESTAMP NOT NULL DEFAULT now()
     );
   `)
+  // Migration: add character_id to existing tables (no-op on fresh installs
+  // because CREATE TABLE already includes the column).
+  await database.execute(sql`ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+  await database.execute(sql`ALTER TABLE archived_summaries ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+  await database.execute(sql`ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS character_id TEXT NOT NULL DEFAULT 'default';`)
+
+  // Migration: layered-consolidation columns. Legacy rows land on layer 1 with
+  // a null aggregation watermark, i.e. they join the next L2 batch like fresh
+  // L1 facts (no-op on fresh installs, same as character_id above).
+  await database.execute(sql`ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS layer INTEGER NOT NULL DEFAULT 1;`)
+  await database.execute(sql`ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS aggregated_at TIMESTAMP;`)
+
+  // Layered-consolidation progress state, one row per (character, session).
+  await database.execute(sql`
+    CREATE TABLE IF NOT EXISTS memory_layer_state (
+      character_id TEXT NOT NULL DEFAULT 'default',
+      session_id TEXT NOT NULL,
+      warmup_step INTEGER NOT NULL DEFAULT 1,
+      l1_rounds_processed INTEGER NOT NULL DEFAULT 0,
+      l1_pass_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL DEFAULT now(),
+      PRIMARY KEY (character_id, session_id)
+    );
+  `)
+
   await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_session_idx ON memory_items (session_id);`)
   await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_kind_idx ON memory_items (kind);`)
+  await database.execute(sql`CREATE INDEX IF NOT EXISTS memory_items_character_idx ON memory_items (character_id);`)
   await database.execute(sql`CREATE INDEX IF NOT EXISTS consolidation_runs_session_idx ON consolidation_runs (session_id);`)
 }
 

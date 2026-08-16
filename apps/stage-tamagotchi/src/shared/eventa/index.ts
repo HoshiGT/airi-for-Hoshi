@@ -26,6 +26,7 @@ import type {
   VrmLoadStartTracePayload,
   VrmUpdateFrameTracePayload,
 } from '@proj-airi/stage-ui-three/trace'
+import type { Rectangle } from 'electron'
 
 import { defineEventa, defineInvokeEventa } from '@moeru/eventa'
 
@@ -33,6 +34,7 @@ export const electronStartTrackMousePosition = defineInvokeEventa('eventa:invoke
 export const electronStartDraggingWindow = defineInvokeEventa('eventa:invoke:electron:start-dragging-window')
 
 export const electronOpenMainDevtools = defineInvokeEventa('eventa:invoke:electron:windows:main:devtools:open')
+export const electronCenterMainWindow = defineInvokeEventa<Rectangle>('eventa:invoke:electron:windows:main:center')
 export const electronOpenSettings = defineInvokeEventa<void, { route?: string }>('eventa:invoke:electron:windows:settings:open')
 export const electronSettingsNavigate = defineEventa<{ route: string }>('eventa:event:electron:windows:settings:navigate')
 export const electronOpenChat = defineInvokeEventa('eventa:invoke:electron:windows:chat:open')
@@ -505,6 +507,28 @@ export const electronGodotStageRequestViewSnapshot = defineInvokeEventa<StageVie
 export const electronGodotStageStatusChanged = defineEventa<ElectronGodotStageStatus>('eventa:event:electron:godot-stage:status-changed')
 export const electronGodotStageViewSnapshotChanged = defineEventa<StageViewSnapshotPayload>('eventa:event:electron:godot-stage:view-snapshot-changed')
 export const electronGodotStageViewStateError = defineEventa<StageViewErrorPayload>('eventa:event:electron:godot-stage:view-state-error')
+
+export type ElectronBrainState = 'stopped' | 'starting' | 'running' | 'error'
+
+/**
+ * Snapshot of the Claude Code brain sidecar lifecycle owned by Electron main.
+ *
+ * - `pid` is only set while the brain child process we spawned exists; it
+ *   stays `null` when the port was already served by another instance
+ * - `lastError` is present after a spawn, startup, or crash failure
+ */
+export interface ElectronBrainStatus {
+  state: ElectronBrainState
+  port: number
+  pid: number | null
+  lastError?: string
+  updatedAt: number
+}
+
+export const electronBrainStart = defineInvokeEventa<ElectronBrainStatus, { port?: number }>('eventa:invoke:electron:brain:start')
+export const electronBrainStop = defineInvokeEventa<ElectronBrainStatus>('eventa:invoke:electron:brain:stop')
+export const electronBrainGetStatus = defineInvokeEventa<ElectronBrainStatus>('eventa:invoke:electron:brain:get-status')
+export const electronBrainStatusChanged = defineEventa<ElectronBrainStatus>('eventa:event:electron:brain:status-changed')
 
 // Global shortcut ->
 

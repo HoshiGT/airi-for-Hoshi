@@ -231,7 +231,6 @@ export default {
   linux: {
     target: [
       'deb',
-      'rpm',
     ],
     // NOTICE: Same channel rule as Windows/macOS. Keep `${arch}` to avoid x64/arm64 feed collisions on Linux.
     publish: {
@@ -245,7 +244,16 @@ export default {
     description: 'AIRI is an AI VTuber/Waifu chatbot supporting Live2D/VRM avatars, featuring human-like interactions and modular stage-based rendering.',
     executableName: 'airi',
     artifactName: '${productName}-${version}-linux-${arch}.${ext}',
-    icon: 'build/icons/icon.png',
+    icon: 'build/icon.png',
+    desktop: {
+      entry: {
+        // NOTICE: On NVIDIA Optimus laptops in on-demand mode, launch Airi on
+        // the discrete GPU by default. GNOME/KDE read this field and route the
+        // launch through switcheroo-control, which sets the PRIME offload env
+        // vars automatically. No manual env prefix needed from the app menu.
+        PrefersNonDefaultGPU: 'true',
+      },
+    },
   },
   appImage: {
     artifactName: '${productName}-${version}-linux-${arch}.${ext}',

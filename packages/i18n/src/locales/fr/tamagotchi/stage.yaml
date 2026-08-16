@@ -15,8 +15,11 @@ docs:
   'open-settings': Ouvrir les paramètres
   'open-chat': Ouvrir le Chat
   'refresh': Actualiser
+  'center-main-window': Move to screen center
   'open-hearing-controls': Ouvrir les contrôles d'écoute
   'drag-to-move-window': Glisser pour déplacer la fenêtre
+  'stop-speaking': Arrêter la parole
+  'speaker-idle': Haut-parleur
   'switch-to-light-mode': Passer au mode clair
   'switch-to-dark-mode': Passer au mode sombre
   'pin-on-top': Épingler en haut

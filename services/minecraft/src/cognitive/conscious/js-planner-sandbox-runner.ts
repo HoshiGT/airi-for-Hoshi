@@ -5,6 +5,8 @@ import type {
   WorkerToParentMessage,
 } from './js-planner-sandbox-protocol'
 
+import process from 'node:process'
+
 import { fork } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -31,6 +33,22 @@ function ancestorPath(path: string, levels: number): string {
 }
 
 const PNPM_MODULE_STORE_PATH = realpathSync(ancestorPath(ISOLATED_VM_ENTRY_PATH, 4))
+
+// NOTICE:
+// The sandbox worker dies on startup with a bare "Access to this API has been
+// restricted" unless this file is readable.
+//
+// isolated-vm ships prebuilt binaries loaded through node-gyp-build, which probes
+// `/etc/alpine-release` to decide between the musl and glibc build. That stat runs
+// while the addon is being required — before any planner code executes — so
+// --allow-addons alone is not enough; the read itself is what --permission denies.
+//
+// Widening the allowlist to /etc would defeat the point, so only the probed file is
+// granted. node-gyp-build guards the probe behind a Linux check, hence the platform
+// condition here.
+//
+// `node_modules/.pnpm/node-gyp-build@4.8.4/node_modules/node-gyp-build/node-gyp-build.js:197`
+const ALPINE_RELEASE_PROBE_PATH = '/etc/alpine-release'
 
 function cloneStructured<T>(value: T): T {
   if (typeof value === 'undefined')
@@ -70,6 +88,7 @@ export async function executeSandboxWorker(
         '--allow-addons',
         `--allow-fs-read=${SANDBOX_SOURCE_DIRECTORY}`,
         `--allow-fs-read=${PNPM_MODULE_STORE_PATH}`,
+        ...(process.platform === 'linux' ? [`--allow-fs-read=${ALPINE_RELEASE_PROBE_PATH}`] : []),
         '--disable-proto=throw',
         '--frozen-intrinsics',
         '--experimental-transform-types',

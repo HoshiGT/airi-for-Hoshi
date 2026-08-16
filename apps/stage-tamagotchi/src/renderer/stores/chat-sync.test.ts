@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ChatSessionsExport } from '@proj-airi/stage-ui/types/chat-session'
 import type { Tool } from '@xsai/shared-chat'
 import type { Ref } from 'vue'
 
@@ -24,6 +25,8 @@ interface MockChatMessage {
   slices?: unknown[]
   tool_results?: Array<{ id: string, isError?: boolean, result: unknown }>
 }
+
+type MockImportSessions = ReturnType<typeof vi.fn<(payload: ChatSessionsExport) => Promise<void>>>
 
 class MockBroadcastChannel {
   static channels = new Map<string, Set<MockBroadcastChannel>>()
@@ -106,6 +109,7 @@ interface MockState {
   applyRemoteSnapshot: ReturnType<typeof vi.fn>
   setSessionMessages: ReturnType<typeof vi.fn>
   getSessionMessages: ReturnType<typeof vi.fn>
+  importSessions: MockImportSessions
   ingest: ReturnType<typeof vi.fn>
 }
 
@@ -123,6 +127,7 @@ vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
       sessionMetas: mockState.sessionMetas.value,
     })),
     getSessionMessages: mockState.getSessionMessages,
+    importSessions: mockState.importSessions,
     setSessionMessages: mockState.setSessionMessages,
   }),
 }))
@@ -219,6 +224,7 @@ describe('useChatSyncStore', async () => {
     })
 
     const getSessionMessages = vi.fn((sessionId: string) => sessionMessages.value[sessionId] ?? [])
+    const importSessions = vi.fn<(payload: ChatSessionsExport) => Promise<void>>().mockResolvedValue(undefined)
 
     const ingest = vi.fn(async () => {
       throw new Error('Remote sent 403 response: {"error":{"message":"This model is not available in your region.","code":403}}')
@@ -240,6 +246,7 @@ describe('useChatSyncStore', async () => {
       applyRemoteSnapshot,
       setSessionMessages,
       getSessionMessages,
+      importSessions,
       ingest,
     }
 
@@ -249,6 +256,82 @@ describe('useChatSyncStore', async () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     MockBroadcastChannel.reset()
+  })
+
+  // https://github.com/moeru-ai/airi/issues/2087
+  it('issue #2087: imports settings-window chats through the authority store', async () => {
+    // ROOT CAUSE:
+    //
+    // The settings window previously never joined the desktop chat channel.
+    // Its import updated only that renderer's Pinia store and IndexedDB, so
+    // the authority kept broadcasting its stale session snapshot until an
+    // app restart hydrated the persisted import.
+    const importedMeta = {
+      sessionId: 'imported-session',
+      userId: 'local',
+      characterId: 'default',
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const payload: ChatSessionsExport = {
+      format: 'chat-sessions-index:v1',
+      index: {
+        userId: 'local',
+        characters: {
+          default: {
+            activeSessionId: 'imported-session',
+            sessions: {
+              'imported-session': importedMeta,
+            },
+          },
+        },
+      },
+      sessions: {
+        'imported-session': {
+          meta: importedMeta,
+          messages: [{ id: 'message-1', role: 'user', content: 'Imported chat' }],
+        },
+      },
+    }
+    mockState.importSessions.mockImplementationOnce(async (imported) => {
+      mockState.activeSessionId.value = imported.index.characters.default?.activeSessionId ?? ''
+      mockState.sessionMetas.value = Object.fromEntries(
+        Object.values(imported.index.characters).flatMap(character => Object.entries(character.sessions)),
+      )
+      mockState.sessionMessages.value = Object.fromEntries(
+        Object.entries(imported.sessions).map(([sessionId, session]) => [
+          sessionId,
+          session.messages.map(message => ({
+            id: message.id,
+            role: message.role,
+            content: typeof message.content === 'string' ? message.content : '',
+          })),
+        ]),
+      )
+    })
+    const authorityStore = useChatSyncStore()
+    authorityStore.initialize('authority')
+
+    setActivePinia(createPinia())
+    const settingsStore = useChatSyncStore()
+    settingsStore.initialize('client')
+
+    await settingsStore.requestImportSessions(payload)
+
+    expect(mockState.importSessions).toHaveBeenCalledTimes(1)
+    expect(mockState.importSessions).toHaveBeenCalledWith(payload)
+    await vi.waitFor(() => {
+      expect(postedMessagesOfType('session-snapshot')).toContainEqual(expect.objectContaining({
+        snapshot: expect.objectContaining({
+          sessionMetas: {
+            'imported-session': importedMeta,
+          },
+        }),
+      }))
+    })
+
+    settingsStore.dispose()
+    authorityStore.dispose()
   })
 
   it('stores command ingest errors in authority session history', async () => {
@@ -407,7 +490,12 @@ describe('useChatSyncStore', async () => {
           'session-1': [{ role: 'system', content: 'main-window' }],
           'session-2': [{ role: 'system', content: 'chat-window' }, { role: 'user', content: 'retry me' }],
         },
-        sessionMetas: {},
+        // Metas cover every session in the index — that is what marks the
+        // follower's local session as still existing.
+        sessionMetas: {
+          'session-1': { sessionId: 'session-1' },
+          'session-2': { sessionId: 'session-2' },
+        },
       },
     })
 
@@ -420,6 +508,132 @@ describe('useChatSyncStore', async () => {
       { role: 'system', content: 'chat-window' },
       { role: 'user', content: 'retry me' },
     ])
+
+    authority.close()
+    store.dispose()
+  })
+
+  it('keeps the follower on a session the authority has not hydrated yet', async () => {
+    // ROOT CAUSE:
+    //
+    // The follower decided whether to keep its own active session by looking for
+    // it in `snapshot.sessionMessages`:
+    //
+    //   shouldPreserveLocalActiveSession = mode === 'follower'
+    //     && !!localActiveSessionId
+    //     && !!snapshot.sessionMessages[localActiveSessionId]
+    //
+    // But `sessionMessages` only holds sessions the authority has hydrated from
+    // IDB. Switching conversations in the chat window (a follower) lands on a
+    // session the main stage window never loaded, so the guard failed and the
+    // follower adopted the authority's `activeSessionId` — snapping the user
+    // back to the previous conversation about a second after the switch, once
+    // the next authority heartbeat arrived.
+    //
+    // We fixed this by keying the decision on `sessionMetas`, which is hydrated
+    // from the index for every known session regardless of message loading.
+    mockState.activeSessionId.value = 'session-2'
+    mockState.sessionMessages.value = {
+      'session-2': [{ role: 'system', content: 'chat-window' }],
+    }
+
+    const store = useChatSyncStore()
+    store.initialize('follower')
+
+    const authority = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
+    authority.postMessage({
+      type: 'session-snapshot',
+      authorityId: 'authority',
+      snapshot: {
+        activeSessionId: 'session-1',
+        // The authority knows session-2 exists but never loaded its messages.
+        sessionMessages: {
+          'session-1': [{ role: 'system', content: 'main-window' }],
+        },
+        sessionMetas: {
+          'session-1': { sessionId: 'session-1' },
+          'session-2': { sessionId: 'session-2' },
+        },
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(mockState.applyRemoteSnapshot).toHaveBeenCalledTimes(1)
+    })
+
+    expect(mockState.applyRemoteSnapshot.mock.calls[0][0]).toMatchObject({ activeSessionId: 'session-2' })
+
+    authority.close()
+    store.dispose()
+  })
+
+  it('adopts the authority session when the local one no longer exists', async () => {
+    // The counterpart to the test above: a session deleted in another window is
+    // gone from `sessionMetas`, and the follower must not sit on a dead id.
+    mockState.activeSessionId.value = 'session-deleted'
+    mockState.sessionMessages.value = {}
+
+    const store = useChatSyncStore()
+    store.initialize('follower')
+
+    const authority = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
+    authority.postMessage({
+      type: 'session-snapshot',
+      authorityId: 'authority',
+      snapshot: {
+        activeSessionId: 'session-1',
+        sessionMessages: { 'session-1': [{ role: 'system', content: 'main-window' }] },
+        sessionMetas: { 'session-1': { sessionId: 'session-1' } },
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(mockState.applyRemoteSnapshot).toHaveBeenCalledTimes(1)
+    })
+
+    expect(mockState.applyRemoteSnapshot.mock.calls[0][0]).toMatchObject({ activeSessionId: 'session-1' })
+
+    authority.close()
+    store.dispose()
+  })
+
+  it('stops requesting snapshots once the authority has answered', async () => {
+    // ROOT CAUSE:
+    //
+    // Every `authority-announcement` (a 1s liveness heartbeat) made the follower
+    // post `request-snapshot`, so the authority answered with a full deep-cloned
+    // copy of every loaded session once per second and the follower replaced its
+    // entire session state that often. That is the bulk of the switching jank.
+    //
+    // We fixed this by only requesting on the first announcement of an authority
+    // (or when the authority instance changes).
+    const store = useChatSyncStore()
+    store.initialize('follower')
+
+    const authority = new MockBroadcastChannel('airi:stage-tamagotchi:chat-sync')
+    const snapshot = {
+      activeSessionId: 'session-1',
+      sessionMessages: { 'session-1': [{ role: 'system', content: 'main-window' }] },
+      sessionMetas: { 'session-1': { sessionId: 'session-1' } },
+    }
+    authority.postMessage({ type: 'session-snapshot', authorityId: 'authority-a', snapshot })
+
+    await vi.waitFor(() => {
+      expect(mockState.applyRemoteSnapshot).toHaveBeenCalledTimes(1)
+    })
+
+    const afterFirstSnapshot = postedMessagesOfType('request-snapshot').length
+    const heartbeat = { type: 'authority-announcement', authorityId: 'authority-a', sentAt: Date.now() }
+    authority.postMessage(heartbeat)
+    authority.postMessage({ ...heartbeat, sentAt: Date.now() + 1000 })
+    authority.postMessage({ ...heartbeat, sentAt: Date.now() + 2000 })
+
+    // Heartbeats from an authority we are already in sync with cost nothing.
+    expect(postedMessagesOfType('request-snapshot')).toHaveLength(afterFirstSnapshot)
+
+    // A different authority (the old window closed, another took over) resyncs.
+    authority.postMessage({ type: 'authority-announcement', authorityId: 'authority-b', sentAt: Date.now() + 3000 })
+    expect(postedMessagesOfType('request-snapshot')).toHaveLength(afterFirstSnapshot + 1)
 
     authority.close()
     store.dispose()

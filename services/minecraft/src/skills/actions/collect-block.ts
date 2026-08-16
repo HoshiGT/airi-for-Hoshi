@@ -1,6 +1,7 @@
 import type { Block } from 'prismarine-block'
 
 import type { Mineflayer } from '../../libs/mineflayer'
+import type { SkillResult } from '../base'
 
 import pathfinder from 'mineflayer-pathfinder'
 
@@ -89,8 +90,21 @@ export async function collectBlock(
           continue
         }
 
-        // Break the block and collect drops
-        await mineAndCollect(mineflayer, veinBlock)
+        // Break the block and collect drops.
+        // NOTICE: `collected` used to be incremented unconditionally, so a dig that never landed
+        // (wrong tool, server rejection) still counted as a collected block and the caller was told
+        // it had resources it did not have.
+        const mined = await mineAndCollect(mineflayer, veinBlock)
+        if (!mined.ok) {
+          logger.log(`Failed to mine ${veinBlock.name}: ${mined.message}`)
+          if (mined.reason === 'toolMissing') {
+            throw new ActionError('RESOURCE_MISSING', mined.message, {
+              blockType: veinBlock.name,
+              missing: mined.missing,
+            })
+          }
+          continue
+        }
 
         collected++
 
@@ -121,11 +135,14 @@ export async function collectBlock(
 }
 
 // Helper function to mine a block and collect drops
-async function mineAndCollect(mineflayer: Mineflayer, block: Block): Promise<void> {
-  // Break the block
-  await breakBlockAt(mineflayer, block.position.x, block.position.y, block.position.z)
-  // Use your existing function to pick up nearby items
+async function mineAndCollect(mineflayer: Mineflayer, block: Block): Promise<SkillResult> {
+  const broken = await breakBlockAt(mineflayer, block.position.x, block.position.y, block.position.z)
+  if (!broken.ok)
+    return broken
+
+  // Finding no drops is not a failure — some blocks drop nothing, and drops can spawn late.
   await pickupNearbyItems(mineflayer, 5)
+  return broken
 }
 
 // Function to find connected blocks (vein mining)

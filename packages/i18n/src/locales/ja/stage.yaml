@@ -1,11 +1,23 @@
 chat:
   actions:
     retry: Retry
+    branch: Branch
   message:
     character-name:
       airi: AIRI
       core-system: コアシステム
       you: あなた
+  command-approval:
+    title: コマンドを実行しようとしています
+    cwd: 実行場所 {path}
+    run: 実行する
+    decline: 実行しない
+    unreachable: 承認ツールに接続できませんでした
+    status:
+      pending: あなたの判断待ち
+      running: 判断を送信中…
+      approved: このコマンドを許可しました
+      declined: このコマンドを拒否しました
   reasoning: 推論
   sessions:
     title: Conversations
@@ -14,12 +26,23 @@ chat:
     cloud-badge: Synced to cloud
     new-chat-fallback: New chat
     delete: Delete conversation
+    rename: 会話の名前を変更
+    rename-placeholder: 会話名
+    deleted-toast: 会話を削除しました
+    undo-delete: 元に戻す
+    purge-empty: 空の会話を削除
 message: 何か話しかけてみましょう…
+sticker-picker:
+  title: スタンプ
+  empty: スタンプがまだありません
 send-mode:
   title: キーを送信
   enter: Enter
   ctrl-enter: Ctrl + Enter
   double-enter: Enter二回
+speech-output:
+  mute: 音声をミュート
+  unmute: ミュートを解除
 operations:
   load-models: モデルの読み込み
   load-models-status:

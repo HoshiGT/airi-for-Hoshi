@@ -5,6 +5,7 @@ import { themeColorFromValue, useThemeColor } from '@proj-airi/stage-layouts/com
 import { artistrySyncConfig } from '@proj-airi/stage-shared'
 import { ToasterRoot } from '@proj-airi/stage-ui/components'
 import { useInferencePreload } from '@proj-airi/stage-ui/composables'
+import { useAuthProviderSync } from '@proj-airi/stage-ui/composables/use-auth-provider-sync'
 import { useSharedAnalyticsStore } from '@proj-airi/stage-ui/stores/analytics'
 import { useCharacterOrchestratorStore } from '@proj-airi/stage-ui/stores/character'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -51,6 +52,7 @@ import {
 import { electronPluginToolsChanged } from '../shared/eventa/plugin/tools'
 import { initializeElectronAuthCallbackBridge } from './bridges/electron-auth-callback'
 import { initializeStageThreeRuntimeTraceBridge } from './bridges/stage-three-runtime-trace'
+import { useClaudeCodeBrain } from './composables/use-claude-code-brain'
 import { useLanguage } from './composables/use-language'
 import { createChatSyncWindowLifecycle, resolveInitialChatSyncRoutePath } from './stores/chat-sync-lifecycle'
 import { useDesktopControlToolsStore } from './stores/desktop-control-tools'
@@ -72,6 +74,9 @@ const initialWindowRoutePath = resolveInitialChatSyncRoutePath(route.path)
 const chatSyncLifecycle = createChatSyncWindowLifecycle(route.path)
 const isSpotlightWindowRoute = initialWindowRoutePath === '/spotlight'
 const isSettingsWindowRoute = initialWindowRoutePath.startsWith('/settings')
+
+if (!isSpotlightWindowRoute)
+  useAuthProviderSync()
 
 function createFullStageRuntime() {
   const contextBridgeStore = useContextBridgeStore()
@@ -255,6 +260,13 @@ function createFullStageRuntime() {
 }
 
 const fullStageRuntime = isSpotlightWindowRoute ? null : createFullStageRuntime()
+
+// The stage window (route '/') owns the Claude Code brain sidecar lifecycle:
+// selecting the claude-code provider starts it, switching away stops it.
+// Settings/chat windows also sync provider changes, but the manager serializes
+// their invokes, so a single owner keeps start/stop semantics unambiguous.
+if (initialWindowRoutePath === '/')
+  useClaudeCodeBrain()
 
 const { restore: restoreLocale } = useLanguage(language, getMainLocale, setLocale)
 

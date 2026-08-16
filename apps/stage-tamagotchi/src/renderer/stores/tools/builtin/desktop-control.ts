@@ -1,5 +1,5 @@
 import type { DesktopScreenshotGeometry } from '@proj-airi/stage-ui/stores/modules/desktop-control'
-import type { Tool } from '@xsai/shared-chat'
+import type { ImageContentPart, TextContentPart, Tool } from '@xsai/shared-chat'
 
 import type {
   DesktopKeyboardAction,
@@ -10,8 +10,6 @@ import type {
 
 import { defineInvoke } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/renderer'
-import { errorMessageFrom } from '@moeru/std'
-import { useVisionInference } from '@proj-airi/stage-ui/composables/vision/use-vision-inference'
 import { mapImagePointToScreen, useDesktopControlStore } from '@proj-airi/stage-ui/stores/modules/desktop-control'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
@@ -24,11 +22,16 @@ import {
 
 /**
  * Neuro-style desktop-control tools: let the character look at the real screen
- * (one-shot screenshot routed through the vision model) and drive the mouse and
- * keyboard. Registered into the shared LLM tools store only while the
+ * (a one-shot screenshot handed straight to the chat model) and drive the mouse
+ * and keyboard. Registered into the shared LLM tools store only while the
  * desktop-control module is enabled (see `stores/desktop-control-tools.ts`), so
  * these executes treat the store flags as a defense-in-depth re-check rather
  * than the primary gate.
+ *
+ * `desktop_look` returns the frame as an image content block rather than routing
+ * it through a separate vision model: the chat brain sees images natively, so a
+ * middleman OCR/describe call would only burn tokens on another provider. This
+ * assumes the active chat model is vision-capable (the intended Claude brain).
  */
 
 export interface DesktopControlInvokers {
@@ -46,13 +49,12 @@ export interface DesktopControlStoreLike {
   setLastScreenshot: (geometry: DesktopScreenshotGeometry | null) => void
 }
 
-/** Runs one multimodal look over a captured frame and returns the model's text. */
-export type RunVisionLook = (input: { imageDataUrl: string, prompt: string }) => Promise<string>
+/** Text instruction plus the captured frame, handed to the chat model as-is. */
+export type DesktopLookResult = [TextContentPart, ImageContentPart]
 
 export interface DesktopControlToolDeps {
   invokers?: DesktopControlInvokers
   store?: DesktopControlStoreLike
-  runVision?: RunVisionLook
 }
 
 let cachedInvokers: DesktopControlInvokers | undefined
@@ -89,36 +91,21 @@ function resolveStore(override?: DesktopControlStoreLike): DesktopControlStoreLi
   }
 }
 
-function resolveRunVision(override?: RunVisionLook): RunVisionLook {
-  if (override)
-    return override
-
-  return async ({ imageDataUrl, prompt }) => {
-    const { runVisionInference } = useVisionInference()
-    // A vision provider/model must be configured in Settings → Modules → Vision;
-    // reuse that config so the "eyes" and their model stay in one place.
-    return runVisionInference({ imageDataUrl, workloadId: 'screen:interpret', promptOverride: prompt })
-  }
-}
-
+// Instruction text that rides alongside the screenshot image block. It addresses
+// the chat model directly (which now sees the frame itself) rather than a
+// separate vision model. `${w}x${h}` is the screenshot's pixel space, which is
+// also the coordinate space desktop_mouse expects, so stating it lets the model
+// give click coordinates the mouse tool can map back to the physical screen.
 const LOOK_PROMPTS = {
-  describe: [
-    'You are looking at a screenshot of the user\'s desktop.',
-    'Describe concisely: the active app or window, the key UI elements, and what the user appears to be doing.',
-    'Keep it factual and short.',
-  ].join('\n'),
-  read_text: [
-    'You are looking at a screenshot of the user\'s desktop.',
-    'Return the visible text, preserving structure with line breaks where possible.',
-  ].join('\n'),
+  describe: 'This is a screenshot of the user\'s screen right now. Use what you see in it to answer.',
+  read_text: 'This is a screenshot of the user\'s screen right now. Read the visible text from it.',
 } as const
 
 function buildLocatePrompt(target: string, image: DesktopScreenshot): string {
   return [
-    `You are looking at a ${image.width}x${image.height} screenshot of the user's desktop.`,
+    `This is a ${image.width}x${image.height} screenshot of the user's screen (top-left is the origin).`,
     `Find the UI element described as: "${target}".`,
-    'Report its center as pixel coordinates in THIS image, with the top-left as the origin.',
-    'Answer in the form `(x, y) — <short confirmation>`. If it is not visible, say so plainly and do not invent coordinates.',
+    'To act on it, call desktop_mouse with the element\'s center as pixel coordinates in THIS screenshot; otherwise just tell the user where it is. Do not invent coordinates if it is not visible.',
   ].join('\n')
 }
 
@@ -145,33 +132,30 @@ type DesktopLookInput = z.infer<typeof desktopLookParams>
 type DesktopMouseInput = z.infer<typeof desktopMouseParams>
 type DesktopKeyboardInput = z.infer<typeof desktopKeyboardParams>
 
-export async function executeDesktopLook(input: DesktopLookInput, deps?: DesktopControlToolDeps): Promise<string> {
+export async function executeDesktopLook(input: DesktopLookInput, deps?: DesktopControlToolDeps): Promise<DesktopLookResult> {
   const store = resolveStore(deps?.store)
   if (!store.enabled)
     throw new Error('Desktop control is turned off. Enable it in Settings → Modules → Desktop control.')
 
   const invokers = resolveInvokers(deps?.invokers)
-  const runVision = resolveRunVision(deps?.runVision)
 
   const screenshot = await invokers.screenshot({})
   // Retain the frame geometry so a follow-up desktop_mouse call can map the
   // model's in-image coordinates back onto the physical screen.
   store.setLastScreenshot(screenshot)
 
-  const prompt = input.mode === 'locate'
+  const instruction = input.mode === 'locate'
     ? buildLocatePrompt(input.target.trim() || 'the element the user just referred to', screenshot)
     : LOOK_PROMPTS[input.mode]
 
-  try {
-    const text = await runVision({ imageDataUrl: screenshot.dataUrl, prompt })
-    return text || 'The vision model returned no description.'
-  }
-  catch (error) {
-    const message = errorMessageFrom(error) ?? 'Vision inference failed'
-    if (/not configured/i.test(message))
-      throw new Error('No vision model is configured. Set one in Settings → Modules → Vision so I can see the screen.')
-    throw new Error(message)
-  }
+  // Return text + the frame as a content-part array. xsAI forwards such arrays
+  // as the tool-result content verbatim (see @xsai/tool `wrapToolResult`), and
+  // the claude-code-brain relay attaches the latest screenshot as a real image
+  // block — so the chat model sees the screen directly, no vision middleman.
+  return [
+    { type: 'text', text: instruction },
+    { type: 'image_url', image_url: { url: screenshot.dataUrl } },
+  ]
 }
 
 export async function executeDesktopMouse(input: DesktopMouseInput, deps?: DesktopControlToolDeps): Promise<string> {
@@ -246,7 +230,7 @@ export function desktopControlTools(capabilities: DesktopControlToolCapabilities
   const tools: Promise<Tool>[] = [
     tool({
       name: 'desktop_look',
-      description: 'Look at the user\'s screen right now. Returns a description, the on-screen text, or the pixel coordinates of a requested element. Call this before clicking so coordinates are known.',
+      description: 'Look at the user\'s screen right now. Captures the screen and returns it to you as an image so you can see it directly. Call this before desktop_mouse so click coordinates are known.',
       execute: input => executeDesktopLook(input),
       parameters: desktopLookParams,
     }),

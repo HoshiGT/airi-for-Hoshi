@@ -2,6 +2,7 @@ menu:
   labels:
     label:
       show: Hiển thị
+      open_at_login: Chạy khi đăng nhập
       adjust_sizes: Chỉnh sửa kích thước
       recommended_size: Khuyến khích (430x600)
       full_height: Toàn cửa sổ

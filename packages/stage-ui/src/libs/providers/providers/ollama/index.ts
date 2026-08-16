@@ -165,7 +165,16 @@ export const providerOllama = defineProvider<OllamaConfig>({
         if (think === undefined)
           return chatOptions
 
-        return { ...chatOptions, think }
+        // Ollama's OpenAI-compatible /v1 endpoint ignores the native `think`
+        // field and only honors `reasoning_effort` ("none"/"low"/"medium"/"high"),
+        // so send both; `think` still covers native-API consumers.
+        const reasoningEffort = think === false
+          ? 'none'
+          : think === true ? undefined : think
+
+        return reasoningEffort === undefined
+          ? { ...chatOptions, think }
+          : { ...chatOptions, think, reasoningEffort }
       },
     }
   },

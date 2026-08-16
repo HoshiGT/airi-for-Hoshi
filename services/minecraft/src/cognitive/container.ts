@@ -67,6 +67,7 @@ export function createAgentContainer(airiClient: Client) {
       baseURL: config.openai.baseUrl,
       apiKey: config.openai.apiKey,
       model: config.openai.model,
+      reasoningEffort: config.openai.reasoningEffort,
     })).singleton(),
 
     // Register EventBus (cognitive event core)

@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 
 import { toProviderHistory, useChatOrchestratorStore } from '../chat'
+import { useAiriCardStore } from '../modules/airi-card'
 import { useMemoryStore } from '../modules/memory'
 import { useChatContextStore } from './context-store'
 import { useMemoryService } from './memory'
@@ -33,6 +34,7 @@ export const useChatMaintenanceStore = defineStore('chat-maintenance', () => {
   const chatStream = useChatStreamStore()
   const chatContext = useChatContextStore()
   const chatOrchestrator = useChatOrchestratorStore()
+  const cardStore = useAiriCardStore()
   const memoryStore = useMemoryStore()
   const memoryService = useMemoryService()
 
@@ -44,9 +46,14 @@ export const useChatMaintenanceStore = defineStore('chat-maintenance', () => {
   }
 
   /**
-   * User-triggered consolidation: compress everything older than the
-   * configured retained window RIGHT NOW, ignoring the `triggerRounds`
-   * high-water mark the automatic pass waits for.
+   * User-triggered consolidation: distill everything older than the configured
+   * retained window RIGHT NOW, ignoring the `triggerRounds` high-water mark the
+   * automatic pass waits for.
+   *
+   * Whether the summarized rounds also leave the conversation is the user's
+   * `trimAfterConsolidation` choice; with it off this is purely additive (new
+   * memories and an archived summary, chat untouched) and safe to repeat, because
+   * the pass starts after the last round already summarized.
    *
    * Same safety contract as the automatic pass in the chat orchestrator:
    * live history is trimmed only after the model call and the memory-DB
@@ -70,27 +77,38 @@ export const useChatMaintenanceStore = defineStore('chat-maintenance', () => {
       return { status: 'nothing-to-archive' }
     await chatSession.loadSession(targetSessionId)
 
+    const trimming = memoryStore.trimAfterConsolidation
+
     // Detach from the reactive proxy: the archived messages are persisted into
     // the memory DB and handed to the model, so they must be plain snapshots.
     const snapshot = chatSession.getSessionMessages(targetSessionId).map(message => toRaw(message))
-    const plan = planConsolidation(snapshot, { retainRounds: memoryStore.retainRounds })
+    const plan = planConsolidation(snapshot, {
+      retainRounds: memoryStore.retainRounds,
+      // Without trimming the rounds stay put, so the watermark is what keeps a
+      // second click from summarizing the same conversation again.
+      consolidatedThroughRound: trimming ? 0 : await memoryService.consolidatedThroughRound(targetSessionId),
+    })
     if (!plan)
       return { status: 'nothing-to-archive' }
 
-    const output = await memoryService.consolidate(targetSessionId, toProviderHistory(plan.archived), {
+    const characterId = chatSession.sessionMetas[targetSessionId]?.characterId || cardStore.activeCardId || 'default'
+    const output = await memoryService.consolidate(characterId, targetSessionId, toProviderHistory(plan.archived), {
       roundFrom: plan.roundFrom,
       roundTo: plan.roundTo,
       // Undo backup: the raw session items (ids included) about to be trimmed.
-      archivedSessionMessages: plan.archived,
+      // Omitted when nothing is removed — undo then only drops the memories.
+      ...(trimming ? { archivedSessionMessages: plan.archived } : {}),
     })
 
-    // Trim by id against the *current* list, not the snapshot: messages that
-    // arrived while the model call ran keep their place; only the archived
-    // rounds are removed.
-    const current = chatSession.getSessionMessages(targetSessionId)
-    const trimmed = current.filter(message => !message.id || !plan.archivedIds.has(message.id))
-    chatSession.setSessionMessages(targetSessionId, trimmed)
-    await chatSession.notifySessionsRewritten()
+    if (trimming) {
+      // Trim by id against the *current* list, not the snapshot: messages that
+      // arrived while the model call ran keep their place; only the archived
+      // rounds are removed.
+      const current = chatSession.getSessionMessages(targetSessionId)
+      const trimmed = current.filter(message => !message.id || !plan.archivedIds.has(message.id))
+      chatSession.setSessionMessages(targetSessionId, trimmed)
+      await chatSession.notifySessionsRewritten()
+    }
 
     return {
       status: 'done',

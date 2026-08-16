@@ -4,12 +4,13 @@ import type { CommonContentPart, Message, ToolMessage } from '@xsai/shared-chat'
 import type { AgentContextPort } from '../contracts/context-port'
 import type { AgentForegroundStreamPort } from '../contracts/stream-port'
 import type { ChatAssistantMessage, ChatHistoryItem, ChatSlices, ChatStreamEventContext, ContextMessage, StreamingAssistantMessage } from '../types/chat'
-import type { StreamEvent, StreamOptions } from '../types/llm'
+import type { LlmUsage, StreamEvent, StreamOptions } from '../types/llm'
 
 import { createQueue } from '@proj-airi/stream-kit'
 
 import { formatContextPromptText } from '../messages/context-prompt'
 import { formatTimePrefix } from '../messages/datetime-prefix'
+import { parseStickerMarker } from '../messages/sticker-marker'
 import { createChatHooks } from './agent-hooks'
 import { useLlmmarkerParser } from './llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from './response-categoriser'
@@ -156,6 +157,16 @@ export interface ChatOrchestratorRuntimeState {
   pendingQueuedSendCount: number
 }
 
+/** Correlation keys shared by every analytics milestone from one user-to-assistant round. */
+interface ChatRoundCorrelation {
+  /** Application conversation that owns the round. */
+  conversationId: string
+  /** Stable round key; the runtime reuses the persisted user-message ID. */
+  roundId: string
+  /** One-based user turn position within the conversation. */
+  turnIndex: number
+}
+
 /**
  * Dependency surface used by the platform-agnostic chat orchestrator runtime.
  */
@@ -174,6 +185,13 @@ export interface ChatOrchestratorRuntimeDeps {
   getActiveProvider: () => string | undefined
   /** Returns optional prompt text appended to the provider system message for this send. */
   getSystemPromptSupplement?: () => string | undefined
+  /**
+   * When set, only the most recent N user-initiated rounds (plus the system
+   * head) are sent to the model. Older messages stay in the session for
+   * browsing and history-tool lookups but never enter the prompt, keeping token
+   * cost bounded while the cache prefix stays stable.
+   */
+  contextWindowRounds?: () => number | undefined
   /** Runtime context providers ingested immediately before prompt composition. */
   runtimeContextProviders?: Array<() => ContextMessage | null | undefined>
   /** Clock used for persisted message timestamps. @default Date.now */
@@ -190,22 +208,21 @@ export interface ChatOrchestratorRuntimeDeps {
   onSendSettled?: (event: { sessionId: string }) => void
   /** Called when a send starts and the first assistant placeholder is created. */
   onTrackFirstMessage?: () => void
-  /** Called when a user starts a chat activation attempt. */
-  onChatActivationStarted?: (event: {
-    sessionId: string
+  /** Called for attempts made before the conversation has its first assistant response. */
+  onChatActivationStarted?: (event: ChatRoundCorrelation & {
     source: 'text' | 'voice'
     model: string
     provider: string
   }) => void
-  /** Called after one user-to-assistant message round completes successfully. */
-  onChatActivationSucceeded?: (event: {
+  /** Called when the conversation reaches its first successful assistant response. */
+  onChatActivationSucceeded?: (event: ChatRoundCorrelation & {
     source: 'text' | 'voice'
     model: string
     provider: string
     durationMs: number
   }) => void
-  /** Called after a chat activation attempt fails before assistant completion. */
-  onChatActivationFailed?: (event: {
+  /** Called when a pre-activation attempt fails before assistant completion. */
+  onChatActivationFailed?: (event: ChatRoundCorrelation & {
     source: 'text' | 'voice'
     model: string
     provider: string
@@ -213,31 +230,52 @@ export interface ChatOrchestratorRuntimeDeps {
     errorCode: 'llm_response_failed'
   }) => void
   /** Called when a user message send begins. */
-  onMessageSendStarted?: (event: {
+  onMessageSendStarted?: (event: ChatRoundCorrelation & {
     source: 'text' | 'voice'
     model: string
   }) => void
   /** Called immediately before the provider LLM request starts. */
-  onLlmRequestStarted?: (event: {
+  onLlmRequestStarted?: (event: ChatRoundCorrelation & {
     model: string
     provider: string
     hasVoice: boolean
   }) => void
   /** Called when the first text token arrives from the provider stream. */
-  onLlmFirstToken?: (event: {
+  onLlmFirstToken?: (event: ChatRoundCorrelation & {
     model: string
     ttfbMs: number
   }) => void
   /** Called after the assistant stream is parsed and rendered into runtime state. */
-  onAssistantResponseRendered?: (event: {
+  onAssistantResponseRendered?: (event: ChatRoundCorrelation & {
     model: string
     latencyMs: number
   }) => void
+  /** Called once per completed provider generation with content-free usage metadata. */
+  onLlmGeneration?: (event: ChatRoundCorrelation & {
+    model: string
+    provider: string
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    usageSource: LlmUsage['source']
+  }) => void
   /** Called after one user-to-assistant message round completes successfully. */
-  onMessageRound?: (event: {
+  onMessageRound?: (event: ChatRoundCorrelation & {
     durationMs: number
     hasVoice: boolean
     model: string
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    usageSource: LlmUsage['source']
+  }) => void
+  /** Called whenever a user-to-assistant round fails before completion. */
+  onMessageRoundFailed?: (event: ChatRoundCorrelation & {
+    source: 'text' | 'voice'
+    model: string
+    provider: string
+    failureStage: 'llm_response'
+    errorCode: 'llm_response_failed'
   }) => void
   /** Called for context/prompt lifecycle observability. */
   onLifecycle?: (record: ChatOrchestratorLifecycleRecord) => void
@@ -251,6 +289,7 @@ export interface ChatOrchestratorRuntimeDeps {
     source: 'text' | 'voice'
     model: string
     provider: string
+    roundId: string
     turnIndex: number
   }) => void
   /** Called after the assistant message has been finalized into session history. */
@@ -293,6 +332,36 @@ export interface ChatOrchestratorRuntime {
 
 function defaultCreateId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * Keeps only the system head + the most recent `windowRounds` user-initiated
+ * rounds. Messages before the window are silently dropped from the prompt but
+ * remain in the session store for browsing and history-tool lookups.
+ */
+function truncateToContextWindow(messages: ChatHistoryItem[], windowRounds?: number): ChatHistoryItem[] {
+  if (!windowRounds || windowRounds <= 0)
+    return messages
+
+  const firstUser = messages.findIndex(m => m.role === 'user')
+  if (firstUser === -1)
+    return messages
+
+  const head = messages.slice(0, firstUser)
+  const body = messages.slice(firstUser)
+
+  // Count user messages as round boundaries (same as splitRounds).
+  const roundStarts: number[] = []
+  for (let i = 0; i < body.length; i++) {
+    if (body[i].role === 'user')
+      roundStarts.push(i)
+  }
+
+  if (roundStarts.length <= windowRounds)
+    return messages
+
+  const cutIndex = roundStarts[roundStarts.length - windowRounds]
+  return [...head, ...body.slice(cutIndex)]
 }
 
 /**
@@ -355,15 +424,23 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     }
   }
 
+  function getStablePromptTimestamp(message: ChatHistoryItem, fallbackCreatedAt: number) {
+    if (typeof message.createdAt === 'number')
+      return message.createdAt
+
+    message.createdAt = fallbackCreatedAt
+    return fallbackCreatedAt
+  }
+
   function buildProviderMessages(sessionMessagesForSend: ChatHistoryItem[]) {
     const nowTs = now()
 
     return sessionMessagesForSend.map((msg) => {
-      const { context: _context, id: _id, createdAt, ...withoutContext } = msg
+      const { context: _context, id: _id, createdAt: _createdAt, ...withoutContext } = msg
       const rawMessage = unwrapMessage(withoutContext)
 
       if (rawMessage.role === 'user') {
-        return prependTextToContent(rawMessage, formatTimePrefix(createdAt ?? nowTs))
+        return prependTextToContent(rawMessage, formatTimePrefix(getStablePromptTimestamp(msg, nowTs)))
       }
 
       if (rawMessage.role === 'assistant') {
@@ -386,6 +463,14 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
     deps.session.ensureSession(sessionId)
 
+    const existingSessionMessages = deps.session.getSessionMessages(sessionId)
+    const turnIndex = existingSessionMessages.filter(message => message.role === 'user').length + 1
+
+    // Activation measures whether a conversation reaches its first assistant
+    // response. Later turns still emit message and latency telemetry, but they
+    // must not inflate the one-time activation milestones.
+    const isActivationAttempt = !existingSessionMessages.some(message => message.role === 'assistant')
+
     // Datetime is no longer injected through the side-channel context store.
     // It is applied at message-assembly time (see below) as a system-prompt
     // date anchor + per-message [HH:MM] prefixes, which is more KV-cache
@@ -395,8 +480,14 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
     const sendingCreatedAt = now()
 
     // TODO: Expire or prune stale runtime contexts from disconnected services before composing.
+    // Allocate the three per-round ids in their historical order so callers
+    // with deterministic id factories keep the same durable message ids.
+    const streamContextMessageId = createId()
+    const assistantMessageId = createId()
+    const roundId = createId()
     const streamingMessageContext: ChatStreamEventContext = {
-      message: { role: 'user', content: sendingMessage, createdAt: sendingCreatedAt, id: createId() },
+      turnId: roundId,
+      message: { role: 'user', content: sendingMessage, createdAt: sendingCreatedAt, id: streamContextMessageId },
       contexts: deps.context.snapshot(),
       composedMessage: [],
       input: options.input,
@@ -424,19 +515,29 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       slices: [],
       tool_results: [],
       createdAt: now(),
-      id: createId(),
+      id: assistantMessageId,
     }
     patchForegroundStream(sessionId, buildingMessage)
     const sendSource = options.input ? 'voice' : 'text'
     const activeProvider = deps.getActiveProvider?.() ?? ''
+    // The user message is the durable start of a round, so its ID also serves
+    // as the correlation key for every telemetry milestone emitted by it.
+    const correlation: ChatRoundCorrelation = {
+      conversationId: sessionId,
+      roundId,
+      turnIndex,
+    }
     deps.onTrackFirstMessage?.()
-    deps.onChatActivationStarted?.({
-      sessionId,
-      source: sendSource,
-      model: options.model,
-      provider: activeProvider,
-    })
+    if (isActivationAttempt) {
+      deps.onChatActivationStarted?.({
+        ...correlation,
+        source: sendSource,
+        model: options.model,
+        provider: activeProvider,
+      })
+    }
     deps.onMessageSendStarted?.({
+      ...correlation,
       source: sendSource,
       model: options.model,
     })
@@ -473,15 +574,13 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       if (shouldAbort())
         return
 
-      const userMessageId = createId()
       const userMessage = {
         role: 'user' as const,
         content: finalContent,
         createdAt: sendingCreatedAt,
-        id: userMessageId,
+        id: roundId,
       }
       deps.session.appendSessionMessage(sessionId, userMessage)
-      const userTurnIndex = deps.session.getSessionMessages(sessionId).filter(message => message.role === 'user').length
 
       // Cloud sync v1: only the raw text part round-trips; image attachments
       // and other non-text parts stay local.
@@ -492,10 +591,14 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         source: sendSource,
         model: options.model,
         provider: activeProvider,
-        turnIndex: userTurnIndex,
+        roundId,
+        turnIndex,
       })
 
-      const sessionMessagesForSend = deps.session.getSessionMessages(sessionId)
+      const sessionMessagesForSend = truncateToContextWindow(
+        deps.session.getSessionMessages(sessionId),
+        deps.contextWindowRounds?.(),
+      )
       deps.onUserTurnReady?.({
         messageText: sendingMessage,
         sessionMessages: sessionMessagesForSend,
@@ -535,6 +638,20 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
         onSpecial: async (special) => {
           if (shouldAbort())
             return
+
+          // Sticker markers become part of the persisted message (a `sticker`
+          // slice rendered inline in chat and forwarded to messaging bridges),
+          // unlike EMOTE/ACT specials which are transient side-channel signals
+          // consumed by hooks only. The special is still emitted to hooks below
+          // so stream observers see every marker uniformly.
+          const stickerName = parseStickerMarker(special)
+          if (stickerName) {
+            buildingMessage.slices.push({
+              type: 'sticker',
+              name: stickerName,
+            })
+            patchForegroundStream(sessionId, buildingMessage)
+          }
 
           await hooks.emitTokenSpecialHooks(special, streamingMessageContext)
         },
@@ -643,7 +760,9 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
       const llmRequestStartedAt = monotonicNow()
       let llmFirstTokenEmitted = false
+      let generationUsage: LlmUsage = { source: 'unavailable' }
       deps.onLlmRequestStarted?.({
+        ...correlation,
         model: options.model,
         provider: deps.getActiveProvider() || 'unknown',
         hasVoice: !!options.input,
@@ -651,9 +770,25 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
       await deps.llm.stream(options.model, options.chatProvider, newMessages as Message[], {
         headers,
+        requestCorrelation: {
+          conversationId: correlation.conversationId,
+          roundId: correlation.roundId,
+        },
         tools: options.tools,
         waitForTools: true,
         captureToolErrors: true,
+        onUsage: (usage) => {
+          generationUsage = usage
+          deps.onLlmGeneration?.({
+            ...correlation,
+            model: options.model,
+            provider: activeProvider,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            usageSource: usage.source,
+          })
+        },
         onStreamEvent: async (event: StreamEvent) => {
           switch (event.type) {
             case 'tool-call':
@@ -684,6 +819,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
               if (!llmFirstTokenEmitted) {
                 llmFirstTokenEmitted = true
                 deps.onLlmFirstToken?.({
+                  ...correlation,
                   model: options.model,
                   ttfbMs: Math.round(monotonicNow() - llmRequestStartedAt),
                 })
@@ -718,6 +854,7 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
 
       await parser.end()
       deps.onAssistantResponseRendered?.({
+        ...correlation,
         model: options.model,
         latencyMs: Math.round(monotonicNow() - llmRequestStartedAt),
       })
@@ -751,26 +888,45 @@ export function createChatOrchestratorRuntime(deps: ChatOrchestratorRuntimeDeps)
       resetForegroundStream(sessionId)
       const durationMs = Math.round(monotonicNow() - roundStartedAt)
       deps.onMessageRound?.({
+        ...correlation,
         durationMs,
         hasVoice: !!options.input,
         model: options.model,
+        inputTokens: generationUsage.inputTokens,
+        outputTokens: generationUsage.outputTokens,
+        totalTokens: generationUsage.totalTokens,
+        usageSource: generationUsage.source,
       })
-      deps.onChatActivationSucceeded?.({
-        durationMs,
-        source: sendSource,
-        model: options.model,
-        provider: activeProvider,
-      })
+      if (isActivationAttempt) {
+        deps.onChatActivationSucceeded?.({
+          ...correlation,
+          durationMs,
+          source: sendSource,
+          model: options.model,
+          provider: activeProvider,
+        })
+      }
     }
     catch (error) {
       console.error('Error sending message:', error)
-      deps.onChatActivationFailed?.({
+      deps.onMessageRoundFailed?.({
+        ...correlation,
         source: sendSource,
         model: options.model,
         provider: activeProvider,
         failureStage: 'llm_response',
         errorCode: 'llm_response_failed',
       })
+      if (isActivationAttempt) {
+        deps.onChatActivationFailed?.({
+          ...correlation,
+          source: sendSource,
+          model: options.model,
+          provider: activeProvider,
+          failureStage: 'llm_response',
+          errorCode: 'llm_response_failed',
+        })
+      }
       throw error
     }
     finally {

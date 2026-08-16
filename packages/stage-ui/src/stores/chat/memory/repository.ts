@@ -1,9 +1,9 @@
 import type { MemoryDatabase } from './db'
-import type { ArchivedSummaryRow, ConsolidationRunRow, MemoryItemRow, NewArchivedSummary, NewConsolidationRun, NewMemoryItem } from './schema'
+import type { ArchivedSummaryRow, ConsolidationRunRow, MemoryItemRow, MemoryLayerStateRow, NewArchivedSummary, NewConsolidationRun, NewMemoryItem, NewMemoryLayerState } from './schema'
 
-import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm'
 
-import { archivedSummaries, consolidationRuns, memoryItems } from './schema'
+import { archivedSummaries, consolidationRuns, memoryItems, memoryLayerState } from './schema'
 
 /** Long-term vs short-term memory bucket. */
 export type MemoryKind = 'long' | 'short'
@@ -28,6 +28,8 @@ export interface MemoryExport {
   memoryItems: SerializedRow<MemoryItemRow>[]
   archivedSummaries: SerializedRow<ArchivedSummaryRow>[]
   consolidationRuns: SerializedRow<ConsolidationRunRow>[]
+  /** Layered-consolidation progress rows; absent in backups from older builds. */
+  layerStates?: SerializedRow<MemoryLayerStateRow>[]
 }
 
 function serializeRow<T extends object>(row: T): SerializedRow<T> {
@@ -44,6 +46,7 @@ export interface RankedMemory {
 }
 
 export interface RetrieveOptions {
+  characterId?: string
   sessionId?: string
   kind?: MemoryKind
   /** @default 8 */
@@ -81,12 +84,28 @@ export class MemoryRepository {
     await this.db.insert(archivedSummaries).values(summary)
   }
 
-  async listMemoryItems(filter?: { sessionId?: string, kind?: MemoryKind }): Promise<MemoryItemRow[]> {
+  /**
+   * Patch a single memory in place — the manual-review edits from the settings
+   * UI. Callers that change `content` must also pass refreshed `keywords` so the
+   * keyword retriever keeps matching the corrected text. An empty patch is a
+   * no-op (drizzle rejects `.set({})`).
+   */
+  async updateMemoryItem(id: string, patch: Partial<Pick<MemoryItemRow, 'content' | 'kind' | 'importance' | 'keywords'>>): Promise<void> {
+    if (Object.keys(patch).length === 0)
+      return
+    await this.db.update(memoryItems).set(patch).where(eq(memoryItems.id, id))
+  }
+
+  async listMemoryItems(filter?: { characterId?: string, sessionId?: string, kind?: MemoryKind, layer?: number }): Promise<MemoryItemRow[]> {
     const conditions = []
+    if (filter?.characterId)
+      conditions.push(eq(memoryItems.characterId, filter.characterId))
     if (filter?.sessionId)
       conditions.push(eq(memoryItems.sessionId, filter.sessionId))
     if (filter?.kind)
       conditions.push(eq(memoryItems.kind, filter.kind))
+    if (filter?.layer !== undefined)
+      conditions.push(eq(memoryItems.layer, filter.layer))
 
     const where = conditions.length > 0 ? and(...conditions) : undefined
     return this.db
@@ -96,8 +115,106 @@ export class MemoryRepository {
       .orderBy(desc(memoryItems.importance), desc(memoryItems.createdAt))
   }
 
-  async listArchivedSummaries(sessionId?: string): Promise<ArchivedSummaryRow[]> {
-    const where = sessionId ? eq(archivedSummaries.sessionId, sessionId) : undefined
+  /**
+   * Items of one tier still awaiting aggregation into the next one
+   * (`aggregated_at IS NULL`), oldest first so batches consume in insertion
+   * order. The L2 pass reads layer-1 items scoped to its own session; the L3
+   * pass reads layer-2 items across the whole character (global profile).
+   */
+  async listPendingLayerItems(layer: number, filter?: { characterId?: string, sessionId?: string }): Promise<MemoryItemRow[]> {
+    const conditions = [eq(memoryItems.layer, layer), isNull(memoryItems.aggregatedAt)]
+    if (filter?.characterId)
+      conditions.push(eq(memoryItems.characterId, filter.characterId))
+    if (filter?.sessionId)
+      conditions.push(eq(memoryItems.sessionId, filter.sessionId))
+
+    return this.db
+      .select()
+      .from(memoryItems)
+      .where(and(...conditions))
+      .orderBy(memoryItems.createdAt)
+  }
+
+  /** How many tier-`layer` items still await the next aggregation pass. */
+  async countPendingLayerItems(layer: number, filter?: { characterId?: string, sessionId?: string }): Promise<number> {
+    return (await this.listPendingLayerItems(layer, filter)).length
+  }
+
+  /**
+   * Stamp items as folded into the next tier. After an L2/L3 pass succeeds,
+   * its source items get this watermark so the next pass skips them; if the
+   * pass produced no items, the stamp still lands so a degenerate batch cannot
+   * be re-processed on every turn.
+   */
+  async markItemsAggregated(ids: string[]): Promise<void> {
+    if (ids.length === 0)
+      return
+    await this.db
+      .update(memoryItems)
+      .set({ aggregatedAt: new Date() })
+      .where(inArray(memoryItems.id, ids))
+  }
+
+  /** The layered-consolidation progress row for a (character, session), if any. */
+  async getLayerState(characterId: string, sessionId: string): Promise<MemoryLayerStateRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(memoryLayerState)
+      .where(and(
+        eq(memoryLayerState.characterId, characterId),
+        eq(memoryLayerState.sessionId, sessionId),
+      ))
+      .limit(1)
+    return rows[0]
+  }
+
+  /** Insert or refresh the layered-consolidation progress row. */
+  async upsertLayerState(input: NewMemoryLayerState): Promise<void> {
+    await this.db
+      .insert(memoryLayerState)
+      .values(input)
+      .onConflictDoUpdate({
+        target: [memoryLayerState.characterId, memoryLayerState.sessionId],
+        set: {
+          warmupStep: input.warmupStep,
+          l1RoundsProcessed: input.l1RoundsProcessed,
+          l1PassCount: input.l1PassCount,
+          updatedAt: new Date(),
+        },
+      })
+  }
+
+  /**
+   * Highest round number any consolidation pass of this session has already
+   * summarized, or 0 when none has.
+   *
+   * Read from `archived_summaries` rather than `consolidation_runs` on purpose:
+   * runs are pruned down to the undoable few, while summaries are kept forever —
+   * and a pruned run must not make a pass re-summarize rounds it already covered.
+   */
+  async latestArchivedRound(sessionId: string): Promise<number> {
+    const rows = await this.db
+      .select({ roundTo: sql<number | null>`max(${archivedSummaries.roundTo})` })
+      .from(archivedSummaries)
+      .where(eq(archivedSummaries.sessionId, sessionId))
+    return rows[0]?.roundTo ?? 0
+  }
+
+  /**
+   * Archived consolidation summaries, newest first.
+   *
+   * Filtering by `characterId` (rather than a single session) is what lets
+   * history search reach conversations other than the open one: archives are the
+   * only place trimmed rounds still exist.
+   */
+  async listArchivedSummaries(filter?: { characterId?: string, sessionId?: string }): Promise<ArchivedSummaryRow[]> {
+    const conditions = []
+    if (filter?.characterId)
+      conditions.push(eq(archivedSummaries.characterId, filter.characterId))
+    if (filter?.sessionId)
+      conditions.push(eq(archivedSummaries.sessionId, filter.sessionId))
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined
     return this.db
       .select()
       .from(archivedSummaries)
@@ -190,15 +307,17 @@ export class MemoryRepository {
    * (dates as ISO strings); {@link importAll} is the inverse.
    */
   async exportAll(): Promise<MemoryExport> {
-    const [items, archives, runs] = await Promise.all([
+    const [items, archives, runs, layerStates] = await Promise.all([
       this.db.select().from(memoryItems).orderBy(memoryItems.createdAt),
       this.db.select().from(archivedSummaries).orderBy(archivedSummaries.createdAt),
       this.db.select().from(consolidationRuns).orderBy(consolidationRuns.seq),
+      this.db.select().from(memoryLayerState),
     ])
     return {
       memoryItems: items.map(serializeRow),
       archivedSummaries: archives.map(serializeRow),
       consolidationRuns: runs.map(serializeRow),
+      layerStates: layerStates.map(serializeRow),
     }
   }
 
@@ -213,6 +332,7 @@ export class MemoryRepository {
         .insert(memoryItems)
         .values(payload.memoryItems.map(row => ({
           ...row,
+          aggregatedAt: row.aggregatedAt ? new Date(row.aggregatedAt) : null,
           createdAt: new Date(row.createdAt),
           lastAccessedAt: row.lastAccessedAt ? new Date(row.lastAccessedAt) : null,
         })))
@@ -245,6 +365,19 @@ export class MemoryRepository {
         })))
         .onConflictDoNothing()
     }
+
+    const layerStates = payload.layerStates ?? []
+    if (layerStates.length > 0) {
+      // Progress rows are keyed by (character, session); an already-present
+      // row wins so a re-import does not rewind a newer local schedule.
+      await this.db
+        .insert(memoryLayerState)
+        .values(layerStates.map(row => ({
+          ...row,
+          updatedAt: new Date(row.updatedAt),
+        })))
+        .onConflictDoNothing()
+    }
   }
 
   async clear(sessionId?: string): Promise<void> {
@@ -252,11 +385,13 @@ export class MemoryRepository {
       await this.db.delete(memoryItems).where(eq(memoryItems.sessionId, sessionId))
       await this.db.delete(archivedSummaries).where(eq(archivedSummaries.sessionId, sessionId))
       await this.db.delete(consolidationRuns).where(eq(consolidationRuns.sessionId, sessionId))
+      await this.db.delete(memoryLayerState).where(eq(memoryLayerState.sessionId, sessionId))
       return
     }
     await this.db.delete(memoryItems)
     await this.db.delete(archivedSummaries)
     await this.db.delete(consolidationRuns)
+    await this.db.delete(memoryLayerState)
   }
 }
 
@@ -297,6 +432,7 @@ export class LocalKeywordRetriever implements MemoryRetriever {
 
     const limit = options?.limit ?? 8
     const candidates = await this.repository.listMemoryItems({
+      characterId: options?.characterId,
       sessionId: options?.sessionId,
       kind: options?.kind,
     })

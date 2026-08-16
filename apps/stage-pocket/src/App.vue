@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { OnboardingDialog, OnboardingStepAnalyticsNotice, ToasterRoot } from '@proj-airi/stage-ui/components'
+import { useAuthProviderSync } from '@proj-airi/stage-ui/composables/use-auth-provider-sync'
 import { isPosthogAvailableInBuild, useSharedAnalyticsStore } from '@proj-airi/stage-ui/stores/analytics'
 import { useCharacterOrchestratorStore } from '@proj-airi/stage-ui/stores/character'
+import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
 import { useDisplayModelsStore } from '@proj-airi/stage-ui/stores/display-models'
 import { useModsServerChannelStore } from '@proj-airi/stage-ui/stores/mods/api/channel-server'
 import { useContextBridgeStore } from '@proj-airi/stage-ui/stores/mods/api/context-bridge'
@@ -20,6 +22,8 @@ import OnboardingPermissionsStep from './components/onboarding/step-permissions.
 
 import { getHostWebSocketConnector } from './modules/websocket-bridge'
 
+useAuthProviderSync()
+
 const contextBridgeStore = useContextBridgeStore()
 const i18n = useI18n()
 const displayModelsStore = useDisplayModelsStore()
@@ -28,6 +32,7 @@ const settings = storeToRefs(settingsStore)
 const onboardingStore = useOnboardingStore()
 const serverChannelStore = useModsServerChannelStore()
 const characterOrchestratorStore = useCharacterOrchestratorStore()
+const chatSessionStore = useChatSessionStore()
 const settingsAudioDeviceStore = useSettingsAudioDevice()
 const { showingSetup } = storeToRefs(onboardingStore)
 const { isDark } = useTheme()
@@ -73,6 +78,15 @@ onMounted(async () => {
   analyticsStore.initialize()
   await displayModelsStore.initialize()
   cardStore.initialize()
+
+  // Mints the active conversation when the character has none yet. Without it a
+  // fresh install has no session to append to: the reply still streams into the
+  // foreground message, but the commit at the end of the turn is dropped and the
+  // stage clears it, so replies appear and then vanish with nothing in history.
+  //
+  // Ordered as in stage-web/stage-tamagotchi — before the character orchestrator,
+  // which both apps already run after this call.
+  await chatSessionStore.initialize()
 
   if (onboardingStore.needsOnboarding) {
     onboardingStore.showingSetup = true

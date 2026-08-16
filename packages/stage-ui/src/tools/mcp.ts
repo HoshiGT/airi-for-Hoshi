@@ -79,6 +79,55 @@ export interface McpToolRuntime {
 }
 
 /**
+ * MCP tools the model is never allowed to call itself, no matter which server
+ * exposes them.
+ *
+ * These are the approval gates of `computer-use-mcp`: a risky action (running a
+ * shell command, opening a PTY) does not execute, it parks as a *pending action*
+ * and the approve tool is what actually runs it. Left in the model's reach that
+ * gate is decorative — the model can approve the command it just proposed
+ * without anyone seeing it, which is exactly what the gate exists to prevent.
+ * The approval queue was built to make the model pause and to leave an audit
+ * trail, not to withstand an adversary, and this character's context carries
+ * untrusted text (bridged chat messages, web search results) that can ask for
+ * a command in the first place.
+ *
+ * So approving is a *human* capability here: the host UI calls these tools
+ * directly through its own {@link McpToolRuntime}, which is not filtered. Only
+ * the model-facing proxy below is.
+ */
+const HUMAN_ONLY_MCP_TOOLS: ReadonlySet<string> = new Set([
+  'desktop_approve_pending_action',
+  'desktop_reject_pending_action',
+])
+
+/**
+ * Strips the server prefix from a qualified MCP tool name.
+ *
+ * Before:
+ * - "computer_use::desktop_approve_pending_action"
+ *
+ * After:
+ * - "desktop_approve_pending_action"
+ *
+ * Matching on the bare tool name is deliberate: the server key is whatever the
+ * user typed in their MCP settings, so gating on the qualified name would let a
+ * rename re-expose the approval tools.
+ */
+function mcpToolNameOf(qualifiedName: string): string {
+  const separator = qualifiedName.lastIndexOf('::')
+  return separator === -1 ? qualifiedName : qualifiedName.slice(separator + 2)
+}
+
+/**
+ * Whether a tool must be driven by the user rather than the model. Exported so
+ * host UIs can label the approval affordances they own.
+ */
+export function isHumanOnlyMcpTool(qualifiedName: string): boolean {
+  return HUMAN_ONLY_MCP_TOOLS.has(mcpToolNameOf(qualifiedName))
+}
+
+/**
  * Creates MCP proxy tools backed by a runtime-provided transport.
  *
  * Use when:
@@ -89,6 +138,11 @@ export interface McpToolRuntime {
  *
  * Returns:
  * - xsai tool definition promises for MCP listing and invocation
+ *
+ * The returned tools are the *model's* view of MCP and are filtered by
+ * {@link isHumanOnlyMcpTool}. A host that needs the full surface (to execute an
+ * approval the user just clicked) should call its `McpToolRuntime` directly
+ * instead of going through these.
  */
 export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
   return [
@@ -97,7 +151,8 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       description: 'List all available MCP tools. Call this first to discover tool names before calling builtIn_mcpCallTool.',
       execute: async () => {
         try {
-          return await runtime.listTools()
+          const tools = await runtime.listTools()
+          return tools.filter(descriptor => !isHumanOnlyMcpTool(descriptor.name))
         }
         catch (error) {
           console.warn('[builtIn_mcpListTools] failed to list tools:', error)
@@ -110,6 +165,19 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       name: 'builtIn_mcpCallTool',
       description: 'Call an MCP tool by name. Use builtIn_mcpListTools first to get available tool names.',
       execute: async ({ name, arguments: argsJson }) => {
+        // Hiding these from the listing is not enough on its own: the pending
+        // response the model just received names the approval tool and quotes
+        // the id to pass it, so the name is right there in its context.
+        if (isHumanOnlyMcpTool(name)) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: `${name} can only be run by the user, not by you. This action is waiting for their approval: show them the exact command you want to run and why, then wait. They approve it in the chat; you will get the result once they do.`,
+            }],
+          }
+        }
+
         try {
           const args = argsJson ? JSON.parse(argsJson) : {}
           return await runtime.callTool({ name, arguments: args })

@@ -13,7 +13,7 @@ import { useChatMaintenanceStore } from '@proj-airi/stage-ui/stores/chat/mainten
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
 import { useL2dViewControl } from '@proj-airi/stage-ui/stores/live2d'
-import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { resolveActiveConsciousnessProviderError, useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { BasicTextarea, useTheme } from '@proj-airi/ui'
@@ -53,6 +53,14 @@ function handleDeleteMessage(index: number) {
   })
 }
 
+async function handleBranchMessage(index: number) {
+  await chatSession.forkSession({
+    fromSessionId: chatSession.activeSessionId,
+    atIndex: index + 1,
+    setActive: true,
+  })
+}
+
 function handleCleanupMessages() {
   const messageCount = messages.value.filter(message => message.role !== 'system').length
   cleanupMessages()
@@ -62,8 +70,16 @@ function handleCleanupMessages() {
   })
 }
 
+interface PendingImage {
+  id: string
+  data: string
+  mimeType: string
+  previewUrl: string
+}
+
 const messageInput = ref('')
 const isComposing = ref(false)
+const pendingImages = ref<PendingImage[]>([])
 const backgroundDialogOpen = ref(false)
 const sessionsDrawerOpen = ref(false)
 
@@ -94,7 +110,7 @@ const { isListening, startStreamingTranscription, stopStreamingTranscription } =
     isStageTamagotchi,
   },
 )
-const { showStopSpeakingButton, stopSpeakingFromChat } = useStopSpeakingButton()
+const { showStopSpeakingButton, speechMuted, stopSpeakingFromChat, toggleSpeechMuted } = useStopSpeakingButton()
 const toggleTranscription = () => isListening.value ? stopStreamingTranscription() : startStreamingTranscription()
 
 async function handleSubmit() {
@@ -103,25 +119,82 @@ async function handleSubmit() {
   }
 }
 
+function readFileAsBase64(file: File): Promise<{ data: string, mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      resolve({ data: base64, mimeType: file.type })
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+async function addImageFiles(files: File[]) {
+  const imageFiles = files.filter(f => f.type.startsWith('image/'))
+  for (const file of imageFiles) {
+    const { data, mimeType } = await readFileAsBase64(file)
+    pendingImages.value.push({
+      id: crypto.randomUUID(),
+      data,
+      mimeType,
+      previewUrl: URL.createObjectURL(file),
+    })
+  }
+}
+
+function removePendingImage(id: string) {
+  const idx = pendingImages.value.findIndex(img => img.id === id)
+  if (idx !== -1) {
+    URL.revokeObjectURL(pendingImages.value[idx].previewUrl)
+    pendingImages.value.splice(idx, 1)
+  }
+}
+
+function handlePasteFile(files: File[]) {
+  addImageFiles(files)
+}
+
 async function handleSend() {
-  if (!messageInput.value.trim() || isComposing.value) {
+  if ((!messageInput.value.trim() && pendingImages.value.length === 0) || isComposing.value) {
     return
   }
 
   const textToSend = messageInput.value
+  const imagesToSend = [...pendingImages.value]
   messageInput.value = ''
+  pendingImages.value = []
 
   try {
+    // Same guard as ChatArea: surface the Consciousness setup hint instead of
+    // providers.ts's raw empty-id lookup error for an unset selection.
+    const providerSetupError = resolveActiveConsciousnessProviderError(activeProvider.value, activeModel.value)
+    if (providerSetupError)
+      throw new Error(providerSetupError)
+
     const providerConfig = providersStore.getProviderConfig(activeProvider.value)
 
     await ingest(textToSend, {
       chatProvider: await providersStore.getProviderInstance(activeProvider.value) as ChatProvider,
       model: activeModel.value,
       providerConfig,
+      ...(imagesToSend.length > 0 && {
+        attachments: imagesToSend.map(img => ({
+          type: 'image' as const,
+          data: img.data,
+          mimeType: img.mimeType,
+        })),
+      }),
     })
+
+    for (const img of imagesToSend)
+      URL.revokeObjectURL(img.previewUrl)
   }
   catch (error) {
     messageInput.value = textToSend
+    pendingImages.value = imagesToSend
     messages.value.pop()
     messages.value.push({
       role: 'error',
@@ -186,6 +259,7 @@ onMounted(() => {
             'relative z-20',
           ]"
           @delete-message="handleDeleteMessage($event.index)"
+          @branch-message="handleBranchMessage($event.index)"
           @tool-call-rerun="rerunToolCall"
         />
       </Transition>
@@ -199,15 +273,36 @@ onMounted(() => {
       <div translate-y="[-100%]" absolute right-0 px-3 pb-3 font-sans>
         <div flex="~ col" gap-1>
           <ActionAbout />
-          <button
-            border="2 solid neutral-100/60 dark:neutral-800/30"
-            bg="neutral-50/70 dark:neutral-800/70"
-            w-fit flex items-center self-end justify-center rounded-xl p-2 backdrop-blur-md
-            title="Conversations"
-            @click="sessionsDrawerOpen = true"
-          >
-            <div i-solar:chat-line-bold-duotone size-5 text="neutral-500 dark:neutral-400" />
-          </button>
+          <div flex="~ col" items-end gap-1>
+            <button
+              data-testid="conversation-selector-button"
+              border="2 solid neutral-100/60 dark:neutral-800/30"
+              bg="neutral-50/70 dark:neutral-800/70"
+              w-fit flex items-center self-end justify-center rounded-xl p-2 backdrop-blur-md
+              :title="t('stage.chat.sessions.title')"
+              :aria-label="t('stage.chat.sessions.title')"
+              @click="sessionsDrawerOpen = true"
+            >
+              <div i-solar:chat-line-bold-duotone size-5 text="neutral-500 dark:neutral-400" />
+            </button>
+            <button
+              data-testid="speech-mute-button"
+              :class="[
+                'w-fit flex items-center self-end justify-center rounded-xl border-2 border-solid p-2 backdrop-blur-md',
+                'border-neutral-100/60 text-neutral-500 transition-colors active:scale-95 dark:border-neutral-800/30 dark:text-neutral-400',
+                speechMuted
+                  ? 'bg-primary-100/80 text-primary-600 dark:bg-primary-900/60 dark:text-primary-300'
+                  : 'bg-neutral-50/70 hover:text-primary-500 dark:bg-neutral-800/70 dark:hover:text-primary-400',
+              ]"
+              :title="speechMuted ? t('stage.speech-output.unmute') : t('stage.speech-output.mute')"
+              :aria-label="speechMuted ? t('stage.speech-output.unmute') : t('stage.speech-output.mute')"
+              :aria-pressed="speechMuted"
+              @click="toggleSpeechMuted"
+            >
+              <div v-if="speechMuted" class="i-solar:volume-cross-bold-duotone size-5" />
+              <div v-else class="i-solar:volume-loud-bold-duotone size-5" />
+            </button>
+          </div>
           <ChatSessionsDrawer v-model="sessionsDrawerOpen" />
           <HearingConfigDialog
             v-model:enabled="enabled"
@@ -257,46 +352,70 @@ onMounted(() => {
           <ViewControls />
         </div>
       </div>
-      <div bg="white dark:neutral-800" max-h-100dvh max-w-100dvw w-full flex gap-1 overflow-auto px-3 pt-2 :style="{ paddingBottom: `${Math.max(Number.parseFloat(screenSafeArea.bottom.value.replace('px', '')), 12)}px` }">
-        <BasicTextarea
-          v-model="messageInput"
-          :placeholder="t('stage.message')"
-          border="solid 2 neutral-200/60 dark:neutral-700/60"
-          text="neutral-500 hover:neutral-600 dark:neutral-100 dark:hover:neutral-200 placeholder:neutral-400 placeholder:hover:neutral-500 placeholder:dark:neutral-300 placeholder:dark:hover:neutral-400"
-          bg="neutral-100/80 dark:neutral-950/80"
-          max-h="[10lh]" min-h="[calc(1lh+4px+4px)]"
-          w-full resize-none overflow-y-scroll rounded="[1lh]" px-4 py-0.5 outline-none backdrop-blur-md scrollbar-none
-          transition="all duration-250 ease-in-out placeholder:all placeholder:duration-250 placeholder:ease-in-out"
-          :class="[themeColorsHueDynamic ? 'transition-colors-none placeholder:transition-colors-none' : '']"
-          default-height="1lh"
-          @submit="handleSubmit"
-          @compositionstart="isComposing = true"
-          @compositionend="isComposing = false"
-        />
-        <button
-          v-if="showStopSpeakingButton"
-          data-testid="stop-speaking-button"
-          :class="[
-            'h-[calc(1lh+4px+4px)] w-[calc(1lh+4px+4px)] flex items-center justify-center self-end rounded-md outline-none',
-            'text-lg text-neutral-500 transition-all duration-200 active:scale-95 dark:text-neutral-400',
-            'hover:bg-primary-100/60 hover:text-primary-600 dark:hover:bg-primary-900/40 dark:hover:text-primary-300',
-          ]"
-          title="Stop speaking"
-          aria-label="Stop speaking"
-          @click="stopSpeakingFromChat"
-        >
-          <div class="i-solar:stop-circle-bold-duotone h-5 w-5" />
-        </button>
-        <button
-          v-if="messageInput.trim() || isComposing"
-          w="[calc(1lh+4px+4px)]" h="[calc(1lh+4px+4px)]" aspect-square flex items-center self-end justify-center rounded-full outline-none backdrop-blur-md
-          text="neutral-500 hover:neutral-600 dark:neutral-900 dark:hover:neutral-800"
-          bg="primary-50/80 dark:neutral-100/80 hover:neutral-50"
-          transition="all duration-250 ease-in-out"
-          @click="handleSend"
-        >
-          <div i-solar:arrow-up-outline />
-        </button>
+      <div bg="white dark:neutral-800" max-h-100dvh max-w-100dvw w-full flex flex-col overflow-auto px-3 pt-2 :style="{ paddingBottom: `${Math.max(Number.parseFloat(screenSafeArea.bottom.value.replace('px', '')), 12)}px` }">
+        <!-- Pending image preview strip -->
+        <div v-if="pendingImages.length > 0" class="flex flex-wrap gap-2 pb-2">
+          <div
+            v-for="img in pendingImages" :key="img.id"
+            :class="[
+              'group relative h-14 w-14 flex-shrink-0 overflow-hidden rounded-lg',
+              'border border-neutral-200/60 dark:border-neutral-700/40',
+            ]"
+          >
+            <img :src="img.previewUrl" class="h-full w-full object-cover">
+            <button
+              :class="[
+                'absolute right-0.5 top-0.5 h-5 w-5 flex items-center justify-center rounded-full',
+                'bg-black/60 text-white',
+              ]"
+              @click="removePendingImage(img.id)"
+            >
+              <div class="i-ph:x-bold h-3 w-3" />
+            </button>
+          </div>
+        </div>
+        <div class="flex gap-1">
+          <BasicTextarea
+            v-model="messageInput"
+            :placeholder="t('stage.message')"
+            border="solid 2 neutral-200/60 dark:neutral-700/60"
+            text="neutral-500 hover:neutral-600 dark:neutral-100 dark:hover:neutral-200 placeholder:neutral-400 placeholder:hover:neutral-500 placeholder:dark:neutral-300 placeholder:dark:hover:neutral-400"
+            bg="neutral-100/80 dark:neutral-950/80"
+            max-h="[10lh]" min-h="[calc(1lh+4px+4px)]"
+            w-full resize-none overflow-y-scroll rounded="[1lh]" px-4 py-0.5 outline-none backdrop-blur-md scrollbar-none
+            transition="all duration-250 ease-in-out placeholder:all placeholder:duration-250 placeholder:ease-in-out"
+            :class="[themeColorsHueDynamic ? 'transition-colors-none placeholder:transition-colors-none' : '']"
+            default-height="1lh"
+            @submit="handleSubmit"
+            @compositionstart="isComposing = true"
+            @compositionend="isComposing = false"
+            @paste-file="handlePasteFile"
+          />
+          <button
+            v-if="showStopSpeakingButton"
+            data-testid="stop-speaking-button"
+            :class="[
+              'h-[calc(1lh+4px+4px)] w-[calc(1lh+4px+4px)] flex items-center justify-center self-end rounded-md outline-none',
+              'text-lg text-neutral-500 transition-all duration-200 active:scale-95 dark:text-neutral-400',
+              'hover:bg-primary-100/60 hover:text-primary-600 dark:hover:bg-primary-900/40 dark:hover:text-primary-300',
+            ]"
+            title="Stop speaking"
+            aria-label="Stop speaking"
+            @click="stopSpeakingFromChat"
+          >
+            <div class="i-solar:stop-circle-bold-duotone h-5 w-5" />
+          </button>
+          <button
+            v-if="messageInput.trim() || isComposing || pendingImages.length > 0"
+            w="[calc(1lh+4px+4px)]" h="[calc(1lh+4px+4px)]" aspect-square flex items-center self-end justify-center rounded-full outline-none backdrop-blur-md
+            text="neutral-500 hover:neutral-600 dark:neutral-900 dark:hover:neutral-800"
+            bg="primary-50/80 dark:neutral-100/80 hover:neutral-50"
+            transition="all duration-250 ease-in-out"
+            @click="handleSend"
+          >
+            <div i-solar:arrow-up-outline />
+          </button>
+        </div>
       </div>
     </div>
   </div>

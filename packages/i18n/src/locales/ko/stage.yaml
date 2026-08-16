@@ -1,11 +1,23 @@
 chat:
   actions:
     retry: Retry
+    branch: Branch
   message:
     character-name:
       airi: AIRI
       core-system: 코어
       you: 당신
+  command-approval:
+    title: 명령을 실행하려고 합니다
+    cwd: 실행 위치 {path}
+    run: 실행
+    decline: 실행 안 함
+    unreachable: 승인 도구에 연결하지 못했습니다
+    status:
+      pending: 결정을 기다리는 중
+      running: 결정을 보내는 중…
+      approved: 이 명령을 승인했습니다
+      declined: 이 명령을 거부했습니다
   reasoning: 추론
   sessions:
     title: Conversations
@@ -14,12 +26,20 @@ chat:
     cloud-badge: Synced to cloud
     new-chat-fallback: New chat
     delete: Delete conversation
+    rename: 대화 이름 변경
+    rename-placeholder: 대화 이름
+    deleted-toast: 대화를 삭제했습니다
+    undo-delete: 되돌리기
+    purge-empty: Clean up empty chats
 message: 듣고 있어요...
 send-mode:
   title: Send key
   enter: 엔터
   ctrl-enter: Ctrl + Enter
   double-enter: Double Enter
+speech-output:
+  mute: 음성 음소거
+  unmute: 음소거 해제
 operations:
   load-models: 모델 불러오기
   load-models-status:

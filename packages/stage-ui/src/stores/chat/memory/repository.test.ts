@@ -79,10 +79,41 @@ describe('memoryRepository', () => {
       roundTo: 20,
     })
 
-    const archives = await repository.listArchivedSummaries('s1')
+    const archives = await repository.listArchivedSummaries({ sessionId: 's1' })
     expect(archives).toHaveLength(1)
     expect(archives[0].summary).toBe('they discussed QQ setup')
     expect(archives[0].rawMessages).toEqual([{ role: 'user', content: 'hi' }])
+  })
+
+  it('reports how far a session has been summarized, per session', async () => {
+    // The watermark a non-trimming consolidation pass resumes from. Read from
+    // summaries (never pruned) rather than runs (pruned to the undoable few).
+    expect(await repository.latestArchivedRound('s1')).toBe(0)
+
+    await repository.addArchivedSummary({ id: 'a1', sessionId: 's1', summary: 'first', rawMessages: [], roundFrom: 1, roundTo: 10 })
+    await repository.addArchivedSummary({ id: 'a2', sessionId: 's1', summary: 'second', rawMessages: [], roundFrom: 11, roundTo: 18 })
+    await repository.addArchivedSummary({ id: 'b1', sessionId: 's2', summary: 'other session', rawMessages: [], roundFrom: 1, roundTo: 4 })
+
+    expect(await repository.latestArchivedRound('s1')).toBe(18)
+    expect(await repository.latestArchivedRound('s2')).toBe(4)
+  })
+
+  it('patches a memory in place and leaves an empty patch untouched', async () => {
+    await repository.addMemoryItems([
+      { id: 'm', sessionId: 's1', kind: 'short', content: 'orig', importance: 0.3, keywords: ['orig'] },
+    ])
+
+    await repository.updateMemoryItem('m', { content: 'corrected', kind: 'long', importance: 0.9, keywords: ['corrected'] })
+    const [after] = await repository.listMemoryItems()
+    expect(after.content).toBe('corrected')
+    expect(after.kind).toBe('long')
+    expect(after.importance).toBe(0.9)
+    expect(after.keywords).toEqual(['corrected'])
+
+    // Empty patch is a no-op (drizzle rejects `.set({})`), so the row is unchanged.
+    await repository.updateMemoryItem('m', {})
+    const [unchanged] = await repository.listMemoryItems()
+    expect(unchanged.content).toBe('corrected')
   })
 
   it('removes memory items and archived summaries by id', async () => {
@@ -96,7 +127,7 @@ describe('memoryRepository', () => {
     await repository.removeArchivedSummary('arch1')
 
     expect((await repository.listMemoryItems()).map(i => i.id)).toEqual(['keep'])
-    expect(await repository.listArchivedSummaries('s1')).toEqual([])
+    expect(await repository.listArchivedSummaries({ sessionId: 's1' })).toEqual([])
   })
 })
 
@@ -226,7 +257,7 @@ describe('memoryRepository · export / import', () => {
     const m2 = items.find(i => i.id === 'm2')!
     expect(m2.lastAccessedAt).toBeNull()
 
-    const archives = await target.listArchivedSummaries('s1')
+    const archives = await target.listArchivedSummaries({ sessionId: 's1' })
     expect(archives).toHaveLength(1)
     expect(archives[0].summary).toBe('they set up the QQ bot')
     expect(archives[0].rawMessages).toEqual([{ role: 'user', content: 'hi' }])
@@ -266,7 +297,7 @@ describe('memoryRepository · export / import', () => {
   it('importing an empty export leaves the database untouched', async () => {
     const target = await makeRepository()
     const empty = await (await makeRepository()).exportAll()
-    expect(empty).toEqual({ memoryItems: [], archivedSummaries: [], consolidationRuns: [] })
+    expect(empty).toEqual({ memoryItems: [], archivedSummaries: [], consolidationRuns: [], layerStates: [] })
 
     await target.importAll(empty)
     expect(await target.listMemoryItems()).toEqual([])

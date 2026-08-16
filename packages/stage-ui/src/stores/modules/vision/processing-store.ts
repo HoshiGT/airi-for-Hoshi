@@ -32,6 +32,11 @@ function countInWindow(history: number[], windowMs: number) {
 }
 
 export const useVisionProcessingStore = defineStore('vision-processing', () => {
+  const captureEnabled = useLocalStorageManualReset<boolean>(
+    'settings/vision/capture-enabled',
+    true,
+  )
+
   const captureIntervalMs = useLocalStorageManualReset<number>(
     'settings/vision/capture-interval-ms',
     DEFAULT_CAPTURE_INTERVAL_MS,
@@ -92,6 +97,10 @@ export const useVisionProcessingStore = defineStore('vision-processing', () => {
   async function runTick() {
     if (!tickHandler.value)
       return
+    if (!captureEnabled.value) {
+      skippedTicks.value += 1
+      return
+    }
     if (isProcessing.value) {
       skippedTicks.value += 1
       return
@@ -161,6 +170,7 @@ export const useVisionProcessingStore = defineStore('vision-processing', () => {
   function resetState() {
     stopTicker()
     resetMetrics()
+    captureEnabled.reset()
     captureIntervalMs.reset()
   }
 
@@ -178,6 +188,7 @@ export const useVisionProcessingStore = defineStore('vision-processing', () => {
   })
 
   return {
+    captureEnabled,
     captureIntervalMs,
     isRunning,
     isProcessing,

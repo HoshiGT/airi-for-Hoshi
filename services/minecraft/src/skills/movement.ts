@@ -1,7 +1,7 @@
-import type { Block } from 'prismarine-block'
 import type { Entity } from 'prismarine-entity'
 
 import type { Mineflayer } from '../libs/mineflayer'
+import type { SkillResult } from './base'
 import type { PathfindProgressInfo, PathfindResult } from './patched-goto'
 
 import pathfinder from 'mineflayer-pathfinder'
@@ -11,7 +11,7 @@ import { randomInt } from 'es-toolkit'
 import { Vec3 } from 'vec3'
 
 import { useLogger } from '../utils/logger'
-import { log } from './base'
+import { log, skillFail, skillOk } from './base'
 import { patchedGoto } from './patched-goto'
 import { getNearestBlock, getNearestEntityWhere } from './world'
 
@@ -88,12 +88,20 @@ export async function goToPosition(
   return result
 }
 
+/**
+ * Walk to the nearest block of a given type.
+ *
+ * NOTICE: this used to return the `Block` and throw a bare `Error` on both "not found" and "could
+ * not reach". The sandbox flattens thrown errors to a string, so the model could not tell those two
+ * cases apart — and "not found" is the one where retrying is pointless. It now reports both through
+ * a `SkillResult`, with the block's coordinates in `detail` so the model can plan from them.
+ */
 export async function goToNearestBlock(
   mineflayer: Mineflayer,
   blockType: string,
   minDistance = 2,
   range = 64,
-): Promise<Block> {
+): Promise<SkillResult> {
   const MAX_RANGE = 512
   if (range > MAX_RANGE) {
     log(mineflayer, `Maximum search range capped at ${MAX_RANGE}.`)
@@ -102,23 +110,43 @@ export async function goToNearestBlock(
 
   const block = getNearestBlock(mineflayer, blockType, range)
   if (!block) {
-    throw new Error(`Could not find any ${blockType} in ${range} blocks.`)
+    log(mineflayer, `Could not find any ${blockType} in ${range} blocks.`)
+    return skillFail('targetNotFound', `No ${blockType} within ${range} blocks. Move somewhere else before searching again — retrying from here will find nothing.`, {
+      detail: { blockType, searchRange: range },
+    })
   }
 
+  const pos = { x: block.position.x, y: block.position.y, z: block.position.z }
   log(mineflayer, `Found ${blockType} at ${block.position}.`)
-  const result = await goToPosition(mineflayer, block.position.x, block.position.y, block.position.z, minDistance)
+
+  const result = await goToPosition(mineflayer, pos.x, pos.y, pos.z, minDistance)
   if (!result.ok) {
-    throw new Error(`Failed to reach ${blockType}: ${result.reason} — ${result.message}`)
+    return skillFail('navigationFailed', `Found ${blockType} at (${pos.x}, ${pos.y}, ${pos.z}) but could not reach it: ${result.reason} — ${result.message}`, {
+      detail: { blockType, position: pos, pathfinderReason: result.reason },
+    })
   }
-  return block
+
+  return skillOk(`Reached ${blockType} at (${pos.x}, ${pos.y}, ${pos.z}).`, {
+    blockType,
+    position: pos,
+    distanceToTarget: result.distanceToTarget,
+  })
 }
 
+/**
+ * Walk to the nearest entity of a given type.
+ *
+ * NOTICE: exposing this as a tool is the point of the whole exercise. Without it the model had to
+ * hand-write `query.entities().whereName("pig").first().pos.x`, which crashes with an unhelpful
+ * "Cannot read properties of undefined" whenever nothing matches — the exact failure that
+ * `augmentDecisionError` in `cognitive/conscious/brain.ts` exists to paper over.
+ */
 export async function goToNearestEntity(
   mineflayer: Mineflayer,
   entityType: string,
   minDistance = 2,
   range = 64,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const entity = getNearestEntityWhere(
     mineflayer,
     entity => entity.name === entityType,
@@ -127,19 +155,32 @@ export async function goToNearestEntity(
 
   if (!entity) {
     log(mineflayer, `Could not find any ${entityType} in ${range} blocks.`)
-    return false
+    return skillFail('targetNotFound', `No ${entityType} within ${range} blocks. Move somewhere else or pick a different target — retrying from here will find nothing.`, {
+      detail: { entityType, searchRange: range },
+    })
   }
 
   const distance = mineflayer.bot.entity.position.distanceTo(entity.position)
+  const pos = { x: entity.position.x, y: entity.position.y, z: entity.position.z }
   log(mineflayer, `Found ${entityType} ${distance} blocks away.`)
-  const result = await goToPosition(
-    mineflayer,
-    entity.position.x,
-    entity.position.y,
-    entity.position.z,
-    minDistance,
-  )
-  return result.ok
+
+  const result = await goToPosition(mineflayer, pos.x, pos.y, pos.z, minDistance)
+  if (!result.ok) {
+    return skillFail('navigationFailed', `Found ${entityType} ${distance.toFixed(1)} blocks away but could not reach it: ${result.reason} — ${result.message}`, {
+      detail: { entityType, position: pos, pathfinderReason: result.reason },
+    })
+  }
+
+  // Mobs move. Report where it ended up, not where it was when the search ran.
+  const endDistance = entity.isValid
+    ? mineflayer.bot.entity.position.distanceTo(entity.position)
+    : null
+
+  return skillOk(`Reached ${entityType}${endDistance == null ? ' (it has since despawned or died)' : `, now ${endDistance.toFixed(1)} blocks away`}.`, {
+    entityType,
+    position: pos,
+    distanceToTarget: endDistance,
+  })
 }
 
 export async function goToPlayer(
@@ -220,31 +261,37 @@ export async function followPlayer(
   return true
 }
 
-export async function moveAway(mineflayer: Mineflayer, distance: number): Promise<boolean> {
+export async function moveAway(mineflayer: Mineflayer, distance: number): Promise<SkillResult> {
+  const startPos = mineflayer.bot.entity.position.clone()
+
   try {
-    const pos = mineflayer.bot.entity.position
-    let newX: number = 0
-    let newZ: number = 0
+    let newX = 0
+    let newZ = 0
     let suitableGoal = false
 
-    while (!suitableGoal) {
+    // NOTICE: bounded. The loop used to spin forever with no exit when every sampled destination
+    // landed on water/lava (standing in the middle of an ocean, say), hanging the turn.
+    const MAX_SAMPLES = 32
+    for (let attempt = 0; attempt < MAX_SAMPLES && !suitableGoal; attempt++) {
       const rand1 = randomInt(0, 2)
       const rand2 = randomInt(0, 2)
       const bigRand1 = randomInt(0, 101)
       const bigRand2 = randomInt(0, 101)
 
-      newX = Math.floor(
-        pos.x + ((distance * bigRand1) / 100) * (rand1 ? 1 : -1),
-      )
-      newZ = Math.floor(
-        pos.z + ((distance * bigRand2) / 100) * (rand2 ? 1 : -1),
-      )
+      newX = Math.floor(startPos.x + ((distance * bigRand1) / 100) * (rand1 ? 1 : -1))
+      newZ = Math.floor(startPos.z + ((distance * bigRand2) / 100) * (rand2 ? 1 : -1))
 
-      const block = mineflayer.bot.blockAt(new Vec3(newX, pos.y - 1, newZ))
+      const block = mineflayer.bot.blockAt(new Vec3(newX, startPos.y - 1, newZ))
 
       if (block?.name !== 'water' && block?.name !== 'lava') {
         suitableGoal = true
       }
+    }
+
+    if (!suitableGoal) {
+      return skillFail('noDestination', `Could not find dry ground within ${distance} blocks to move to — everything around is water or lava.`, {
+        detail: { distance },
+      })
     }
 
     const farGoal = new pathfinder.goals.GoalXZ(newX, newZ)
@@ -253,11 +300,22 @@ export async function moveAway(mineflayer: Mineflayer, distance: number): Promis
     const newPos = mineflayer.bot.entity.position
     logger.log(`I moved away from nearest entity to ${newPos}.`)
     await sleep(500)
-    return result.ok
+
+    const moved = startPos.distanceTo(mineflayer.bot.entity.position)
+    if (!result.ok) {
+      return skillFail('navigationFailed', `Tried to move ${distance} blocks away but only got ${moved.toFixed(1)} blocks: ${result.reason} — ${result.message}`, {
+        detail: { requestedDistance: distance, movedDistance: moved },
+      })
+    }
+
+    return skillOk(`Moved ${moved.toFixed(1)} blocks away, now at (${Math.floor(newPos.x)}, ${Math.floor(newPos.y)}, ${Math.floor(newPos.z)}).`, {
+      movedDistance: moved,
+      position: { x: newPos.x, y: newPos.y, z: newPos.z },
+    })
   }
   catch (err) {
     logger.log(`I failed to move away: ${(err as Error).message}`)
-    return false
+    return skillFail('navigationFailed', `Failed to move away: ${errorMessageFrom(err) ?? String(err)}`)
   }
 }
 
@@ -265,23 +323,69 @@ export async function moveAwayFromEntity(
   mineflayer: Mineflayer,
   entity: Entity,
   distance = 16,
-): Promise<boolean> {
+): Promise<SkillResult> {
   const goal = new goals.GoalFollow(entity, distance)
   const invertedGoal = new goals.GoalInvert(goal)
   const result = await patchedGoto(mineflayer.bot, invertedGoal)
-  return result.ok
-}
 
-export async function stay(mineflayer: Mineflayer, seconds = 30): Promise<boolean> {
-  const start = Date.now()
-  const targetTime = seconds === -1 ? Infinity : start + seconds * 1000
-
-  while (Date.now() < targetTime) {
-    await sleep(500)
+  const label = entity.name ?? entity.username ?? 'entity'
+  if (!result.ok) {
+    return skillFail('navigationFailed', `Could not retreat ${distance} blocks from ${label}: ${result.reason} — ${result.message}`, {
+      detail: { entityType: label, requestedDistance: distance },
+    })
   }
 
-  log(mineflayer, `I stayed for ${(Date.now() - start) / 1000} seconds.`)
-  return true
+  return skillOk(`Backed away from ${label}.`, { entityType: label })
+}
+
+/**
+ * Stand still for a while.
+ *
+ * NOTICE: `seconds` is clamped. The original accepted `-1` as "forever", which as an LLM-callable
+ * tool means one bad argument wedges the bot until the process restarts.
+ */
+export async function stay(mineflayer: Mineflayer, seconds = 30): Promise<SkillResult> {
+  const MAX_SECONDS = 300
+  const requested = seconds
+  const clamped = Math.min(Math.max(seconds < 0 ? MAX_SECONDS : seconds, 0), MAX_SECONDS)
+
+  const start = Date.now()
+
+  // Race the wait against an interrupt rather than polling a flag: waiting out the full duration
+  // while something urgent is happening (a mob attacking, the master calling) is exactly what the
+  // interrupt exists to prevent.
+  const interrupted = await new Promise<boolean>((resolve) => {
+    let timer: ReturnType<typeof setTimeout>
+
+    const onInterrupt = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+
+    timer = setTimeout(() => {
+      mineflayer.off('interrupt', onInterrupt)
+      resolve(false)
+    }, clamped * 1000)
+
+    mineflayer.once('interrupt', onInterrupt)
+  })
+
+  const elapsed = (Date.now() - start) / 1000
+  log(mineflayer, `I stayed for ${elapsed} seconds.`)
+
+  if (interrupted) {
+    return skillOk(`Stayed put for ${elapsed.toFixed(0)}s, then was interrupted.`, {
+      elapsedSeconds: elapsed,
+      interrupted: true,
+    })
+  }
+
+  return skillOk(
+    requested !== clamped
+      ? `Stayed put for ${elapsed.toFixed(0)}s (requested ${requested}s, capped at ${MAX_SECONDS}s).`
+      : `Stayed put for ${elapsed.toFixed(0)}s.`,
+    { elapsedSeconds: elapsed },
+  )
 }
 
 export async function goToBed(mineflayer: Mineflayer): Promise<boolean> {

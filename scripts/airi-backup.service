@@ -1,0 +1,10 @@
+[Unit]
+Description=AIRI Electron user-data backup (chat, cards, memory, settings)
+Documentation=file:%h/Airi-for-Hoshi/scripts/backup-airi-data.sh
+
+[Service]
+Type=oneshot
+# %h expands to the user's home. Adjust if the repo lives elsewhere.
+ExecStart=%h/Airi-for-Hoshi/scripts/backup-airi-data.sh
+Nice=10
+IOSchedulingClass=idle

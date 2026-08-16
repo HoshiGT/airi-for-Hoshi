@@ -10,12 +10,10 @@ import { useLlmToolsStore } from './llm-tools'
 const {
   streamTextMock,
   mcpMock,
-  debugMock,
   createSparkCommandToolMock,
 } = vi.hoisted(() => ({
   streamTextMock: vi.fn(),
   mcpMock: vi.fn(async (): Promise<Tool[]> => []),
-  debugMock: vi.fn(async (): Promise<Tool[]> => []),
   createSparkCommandToolMock: vi.fn(async (): Promise<unknown> => [{
     name: 'spark',
     description: '',
@@ -38,8 +36,19 @@ vi.mock('@xsai/shared-chat', () => ({
 
 vi.mock('../tools', () => ({
   mcp: mcpMock,
-  debug: debugMock,
   createSparkCommandTool: createSparkCommandToolMock,
+  // NOTICE: the resolver imports `createWebSearchTools` and `createMemoryTools`
+  // from the tools barrel, so the mock must expose both or module loading fails
+  // with a missing-export error.
+  createWebSearchTools: vi.fn(async (): Promise<Tool[]> => []),
+  createMemoryTools: vi.fn(async (): Promise<Tool[]> => []),
+}))
+
+// The memory module store reaches the providers store, whose setup calls
+// useI18n() — unavailable in this node-env suite with no app instance. Mock the
+// gate closed: these cases are about tool merge order, not memory.
+vi.mock('./modules/memory', () => ({
+  useMemoryStore: () => ({ toolsActive: false }),
 }))
 
 const provider = {
@@ -75,7 +84,6 @@ describe('isToolRelatedError', () => {
   beforeEach(() => {
     streamTextMock.mockReset()
     mcpMock.mockClear()
-    debugMock.mockClear()
     createSparkCommandToolMock.mockClear()
     setActivePinia(createPinia())
   })
@@ -200,7 +208,6 @@ describe('isToolRelatedError', () => {
     const firstCallTools = streamTextMock.mock.calls[0]?.[0]?.tools
     expect(Array.isArray(firstCallTools)).toBe(true)
     expect(mcpMock).toHaveBeenCalledTimes(1)
-    expect(debugMock).toHaveBeenCalledTimes(1)
     expect(firstCallTools).toContain(customTool)
     expect(firstCallTools?.map(toolNameFrom)).toContain('runtime_play_chess_match')
 

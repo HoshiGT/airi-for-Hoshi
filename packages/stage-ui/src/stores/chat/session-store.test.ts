@@ -296,3 +296,210 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
     expect(store.sessionMetas['sess-1']).toBeUndefined()
   })
 })
+
+describe('chat-session-store · remote snapshots from another window', () => {
+  const metaFor = (sessionId: string): ChatSessionMeta => ({
+    sessionId,
+    userId: 'local',
+    characterId: 'default',
+    createdAt: 1,
+    updatedAt: 1,
+  })
+
+  // ROOT CAUSE:
+  //
+  // applyRemoteSnapshot replaced the whole message map:
+  //
+  //   sessionMessages.value = cloneDeep(snapshot.sessionMessages)
+  //
+  // The desktop authority only broadcasts sessions it has hydrated, so the chat
+  // window (a follower) lost the conversation it had just loaded every time a
+  // snapshot arrived — it then re-read IDB and re-rendered, which is what the
+  // switching jank looked like.
+  //
+  // We fixed this by merging: local-only sessions survive as long as the
+  // snapshot's metas still list them.
+  it('keeps locally-loaded messages the snapshot does not carry', () => {
+    const store = useChatSessionStore()
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-local',
+      sessionMessages: { 'sess-local': [{ role: 'user', content: 'loaded here', id: 'm1' } as any] },
+      sessionMetas: { 'sess-local': metaFor('sess-local') },
+      index: null,
+    })
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-remote',
+      sessionMessages: { 'sess-remote': [{ role: 'user', content: 'from authority', id: 'm2' } as any] },
+      // The authority knows both sessions exist; it just never loaded sess-local.
+      sessionMetas: { 'sess-local': metaFor('sess-local'), 'sess-remote': metaFor('sess-remote') },
+      index: null,
+    })
+
+    expect(store.sessionMessages['sess-local']).toEqual([{ role: 'user', content: 'loaded here', id: 'm1' }])
+    expect(store.sessionMessages['sess-remote']).toEqual([{ role: 'user', content: 'from authority', id: 'm2' }])
+  })
+
+  it('drops local messages for a session deleted in the other window', () => {
+    const store = useChatSessionStore()
+
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-doomed',
+      sessionMessages: { 'sess-doomed': [{ role: 'user', content: 'bye', id: 'm1' } as any] },
+      sessionMetas: { 'sess-doomed': metaFor('sess-doomed') },
+      index: null,
+    })
+
+    // The session is gone from metas: it was deleted elsewhere, so the merge
+    // must not keep it alive locally.
+    store.applyRemoteSnapshot({
+      activeSessionId: 'sess-remote',
+      sessionMessages: { 'sess-remote': [] },
+      sessionMetas: { 'sess-remote': metaFor('sess-remote') },
+      index: null,
+    })
+
+    expect(store.sessionMessages['sess-doomed']).toBeUndefined()
+    expect(store.sessionMetas['sess-doomed']).toBeUndefined()
+  })
+})
+
+describe('chat-session-store · rename and delete undo', () => {
+  it('renames a session and clears the title back to the auto preview', async () => {
+    const store = useChatSessionStore()
+    await store.initialize()
+    const sessionId = store.activeSessionId
+
+    await store.renameSession(sessionId, '  记忆工具那次  ')
+    expect(store.sessionMetas[sessionId]?.title).toBe('记忆工具那次')
+
+    // A blank title means "go back to the first-message preview", not an empty row.
+    await store.renameSession(sessionId, '   ')
+    expect(store.sessionMetas[sessionId]?.title).toBeUndefined()
+  })
+
+  it('restores a deleted session from the backup delete returned', async () => {
+    const store = useChatSessionStore()
+    await store.initialize()
+
+    const keptId = store.activeSessionId
+    const doomedId = await store.createSession('default', { setActive: true, title: 'branch to delete' })
+    store.appendSessionMessage(doomedId, { role: 'user', content: 'do not lose me', id: 'm1' } as any)
+
+    const backup = await store.deleteSession(doomedId)
+    expect(backup).toBeDefined()
+    expect(store.sessionMetas[doomedId]).toBeUndefined()
+    // Deleting the active session moves focus elsewhere.
+    expect(store.activeSessionId).toBe(keptId)
+
+    await store.restoreSession(backup!)
+
+    expect(store.sessionMetas[doomedId]?.title).toBe('branch to delete')
+    // The seeded system message plus the one turn that was in it.
+    const restoredMessages = store.getSessionMessages(doomedId)
+    expect(restoredMessages).toHaveLength(2)
+    expect(restoredMessages[0]?.role).toBe('system')
+    expect(restoredMessages[1]).toMatchObject({ role: 'user', content: 'do not lose me' })
+    // It was the session on screen when deleted, so undo puts the user back.
+    expect(store.activeSessionId).toBe(doomedId)
+  })
+})
+
+describe('chat-session-store · active card prompt edits', () => {
+  // ROOT CAUSE:
+  //
+  // Editing the active card updates `systemPrompt`, but the session store only
+  // used that value when creating or resetting a session. The current
+  // conversation therefore kept sending its stale system message until the
+  // user manually started a new session.
+  //
+  // We fix this by replacing only the current character session's system
+  // message when its resolved card prompt changes, while preserving the
+  // message identity and conversation history.
+  // https://github.com/moeru-ai/airi/issues/1995
+  it('updates the current session system message for Issue #1995 without clearing its history', async () => {
+    systemPromptRef.value = 'Original character prompt'
+    const store = useChatSessionStore()
+    await store.initialize()
+
+    const sessionId = store.activeSessionId
+    const originalSystemMessage = store.messages[0]
+    store.appendSessionMessage(sessionId, {
+      role: 'user',
+      content: 'Keep this turn.',
+      id: 'user-message',
+      createdAt: 2,
+    })
+
+    systemPromptRef.value = 'Updated character prompt'
+    await nextTick()
+
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[0]?.role).toBe('system')
+    expect(store.messages[0]?.id).toBe(originalSystemMessage?.id)
+    expect(store.messages[0]?.createdAt).toBe(originalSystemMessage?.createdAt)
+    expect(store.messages[0]?.content).toContain('Updated character prompt')
+    expect(store.messages[0]?.content).not.toContain('Original character prompt')
+    expect(store.messages[1]?.content).toBe('Keep this turn.')
+  })
+
+  // https://github.com/moeru-ai/airi/issues/1995
+  it('hydrates a persisted Issue #1995 session before refreshing its system message', async () => {
+    const meta: ChatSessionMeta = {
+      sessionId: 'persisted-session',
+      userId: 'local',
+      characterId: 'default',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    getIndexMock.mockResolvedValue({
+      userId: 'local',
+      characters: {
+        default: {
+          activeSessionId: meta.sessionId,
+          sessions: { [meta.sessionId]: meta },
+        },
+      },
+    })
+
+    let resolveStoredSession: ((record: ChatSessionRecord) => void) | undefined
+    getSessionMock.mockImplementation(() => new Promise<ChatSessionRecord | null>((resolve) => {
+      resolveStoredSession = resolve
+    }))
+
+    systemPromptRef.value = 'Updated persisted prompt'
+    const store = useChatSessionStore()
+    const initializePromise = store.initialize()
+    await flushMicrotasks()
+
+    // Updating the active session id must not persist a fresh system message
+    // over history that has not finished loading from IndexedDB.
+    expect(store.sessionMessages[meta.sessionId]).toBeUndefined()
+
+    resolveStoredSession?.({
+      meta,
+      messages: [
+        {
+          role: 'system',
+          content: 'Stale persisted prompt',
+          id: 'system-message',
+          createdAt: 1,
+        },
+        {
+          role: 'user',
+          content: 'Persisted history',
+          id: 'user-message',
+          createdAt: 2,
+        },
+      ],
+    })
+    await initializePromise
+    await nextTick()
+
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[0]?.id).toBe('system-message')
+    expect(store.messages[0]?.content).toContain('Updated persisted prompt')
+    expect(store.messages[1]?.content).toBe('Persisted history')
+  })
+})
