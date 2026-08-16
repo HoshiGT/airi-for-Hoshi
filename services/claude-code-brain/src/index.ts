@@ -42,7 +42,6 @@ import { Buffer } from 'node:buffer'
 import { createSdkMcpServer, deleteSession, listSessions, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import { Format, LogLevel, useLogg } from '@guiiai/logg'
 
-import { confirmStartDespiteEgress, decideEgress, parseAllowedEgressIps, probeEgressIp } from './egress-guard'
 import { decideStrategy, SessionRegistry, sessionStoreKey } from './sessions'
 import { estimateQueryTokens } from './token-estimate'
 import { ADVERTISED_MODELS, chunkOf, completionOf, composeCurrentRound, composeQueryInput, composeSystemPrompt, finalChunkOf, jsonSchemaToZodShape, reasoningChunkOf, resolveModelOption, toolCallChunkOf } from './translate'
@@ -50,25 +49,6 @@ import { ADVERTISED_MODELS, chunkOf, completionOf, composeCurrentRound, composeQ
 const log = useLogg('ClaudeCodeBrain').withLogLevel(LogLevel.Log).withFormat(Format.Pretty)
 
 const PORT = Number(process.env.CLAUDE_BRAIN_PORT || 14515)
-
-/**
- * Exit-IP interlock. This bridge spends the user's Claude *subscription*, so
- * which address it appears to come from is theirs to pin: `CLAUDE_BRAIN_EGRESS_IPS`
- * holds the allowed addresses (keep it in `.env`, which is gitignored — an exit
- * IP is not something to commit), and a mismatch or a failed probe stops the
- * start until someone confirms by hand. Set `CLAUDE_BRAIN_EGRESS_CHECK=0` to
- * skip the check entirely.
- */
-const EGRESS_CHECK_ENABLED = !['0', 'false'].includes((process.env.CLAUDE_BRAIN_EGRESS_CHECK ?? '').trim().toLowerCase())
-
-/** How long the manual override waits for an answer before declining. */
-const EGRESS_CONFIRM_TIMEOUT_MS = 120_000
-
-/**
- * Whether the exit-IP check has cleared. Requests are refused until it has —
- * the listener is bound first so a duplicate instance can bow out quietly.
- */
-let egressGateCleared = false
 
 /**
  * Chat companion latency beats reasoning depth here; 'low' keeps replies
@@ -541,15 +521,6 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // The socket is bound before the egress guard has finished (so an
-  // already-running instance can be detected without prompting first), so
-  // refuse real work until it clears. Without this, a request arriving in that
-  // window would reach Anthropic from exactly the exit the guard is checking.
-  if (!egressGateCleared) {
-    respondError(res, 503, 'claude-code-brain is verifying its exit IP — see the service logs')
-    return
-  }
-
   const url = new URL(req.url || '/', 'http://localhost')
 
   if (req.method === 'GET' && url.pathname === '/v1/models') {
@@ -564,85 +535,6 @@ const server = http.createServer(async (req, res) => {
 
   respondError(res, 404, `No route for ${req.method} ${url.pathname}`)
 })
-
-/**
- * Ask the terminal a question, or give up.
- *
- * Returns `null` when there is no interactive stdin — the bridge is usually
- * spawned by a dev script or the desktop app, and in that case the manual
- * override must be impossible rather than silently auto-answered.
- */
-async function askOperator(question: string): Promise<string | null> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY)
-    return null
-
-  const readline = await import('node:readline/promises')
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    // A prompt left open forever would hang a `pnpm dev` shell; abandoning it
-    // counts as "no answer", which the guard treats as decline.
-    return await rl.question(question, { signal: AbortSignal.timeout(EGRESS_CONFIRM_TIMEOUT_MS) })
-  }
-  catch {
-    return null
-  }
-  finally {
-    rl.close()
-  }
-}
-
-/**
- * Decide whether this process may serve Claude traffic from the current exit.
- *
- * Order matters: the socket is already bound at this point, so a duplicate
- * instance has exited quietly through the EADDRINUSE path above without ever
- * prompting — the operator only sees a question when this really is the
- * instance that would talk to Anthropic.
- */
-async function clearEgressGate(): Promise<boolean> {
-  if (!EGRESS_CHECK_ENABLED) {
-    log.log('exit IP check disabled (CLAUDE_BRAIN_EGRESS_CHECK=0)')
-    return true
-  }
-
-  const allowed = parseAllowedEgressIps(process.env.CLAUDE_BRAIN_EGRESS_IPS)
-  const probe = await probeEgressIp({
-    url: process.env.CLAUDE_BRAIN_EGRESS_URL,
-    env: process.env,
-  })
-  const verdict = decideEgress({ allowed, probe })
-
-  if (probe.proxyEnvVars.length > 0) {
-    // NOTICE:
-    // Node's fetch ignores proxy env vars; the Claude CLI the Agent SDK spawns
-    // honours them. With those set, this probe measured the direct route and
-    // the SDK may leave through a different one, so the verdict below is about
-    // the wrong path. A transparent/TUN proxy has no such split.
-    log.withFields({ proxyEnvVars: probe.proxyEnvVars }).warn('proxy env vars are set — this probe went direct, so it may not reflect the exit the Claude SDK uses')
-  }
-
-  if (verdict.decision === 'allowed') {
-    log.withFields({ exitIp: verdict.detected }).log('exit IP check passed')
-    return true
-  }
-
-  if (verdict.decision === 'unconfigured') {
-    log.withFields({ exitIp: verdict.detected ?? 'unknown' }).warn('exit IP not pinned — set CLAUDE_BRAIN_EGRESS_IPS in services/claude-code-brain/.env to enable the check')
-    return true
-  }
-
-  log.withFields({ expected: allowed.join(', '), detected: verdict.detected ?? 'unknown', reason: verdict.reason })
-    .error('refusing to start: the exit IP is not the pinned one')
-
-  const confirmed = await confirmStartDespiteEgress({ detected: verdict.detected, ask: askOperator })
-  if (confirmed) {
-    log.withFields({ exitIp: verdict.detected ?? 'unknown' }).warn('operator confirmed manually — starting from an unpinned exit')
-    return true
-  }
-
-  log.log('not started. Re-run once the expected exit is back, update CLAUDE_BRAIN_EGRESS_IPS, or start with CLAUDE_BRAIN_EGRESS_CHECK=0')
-  return false
-}
 
 // NOTICE:
 // `pnpm dev` / `pnpm dev:tamagotchi` start this bridge in parallel with the
@@ -677,16 +569,8 @@ async function purgeStaleSessionFiles(): Promise<void> {
 }
 
 server.listen(PORT, '127.0.0.1', () => {
-  void clearEgressGate().then((cleared) => {
-    if (!cleared) {
-      server.close()
-      process.exit(1)
-    }
+  log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS ?? 'unlimited', sessions: SESSIONS_ENABLED }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
+  log.log(`  baseUrl: http://localhost:${PORT}/v1/`)
 
-    egressGateCleared = true
-    log.withFields({ port: PORT, effort: EFFORT, forwardThinking: FORWARD_THINKING, maxHistoryRounds: MAX_HISTORY_ROUNDS ?? 'unlimited', sessions: SESSIONS_ENABLED }).log('claude-code-brain listening — point AIRI\'s OpenAI-compatible provider at this URL')
-    log.log(`  baseUrl: http://localhost:${PORT}/v1/`)
-
-    void purgeStaleSessionFiles()
-  })
+  void purgeStaleSessionFiles()
 })
